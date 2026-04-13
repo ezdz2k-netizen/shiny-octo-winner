@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block content %}
+
+<section class="hero card">
+  <div class="hero-copy">
+    <div class="eyebrow">Simple Workflow</div>
+    <h1>Upload, choose variables, and run your crosstab.</h1>
+    <p class="muted hero-text">Upload the Value and Labels export from Toluna Analytics. The app will auto-detect which is which.</p>
+  </div>
+  <div class="hero-steps">
+    <div class="mini-step">
+      <span>1</span>
+      <div>
+        <strong>Upload files</strong>
+        <p class="muted">Select the two Toluna workbooks in either order.</p>
+      </div>
+    </div>
+    <div class="mini-step">
+      <span>2</span>
+      <div>
+        <strong>Set up tables</strong>
+        <p class="muted">Choose row, column, and output settings.</p>
+      </div>
+    </div>
+    <div class="mini-step">
+      <span>3</span>
+      <div>
+        <strong>Preview and export</strong>
+        <p class="muted">Review the result, save outputs, and export.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="section-head">
+    <div>
+      <div class="eyebrow">Step 1</div>
+      <h2>Upload source files</h2>
+    </div>
+  </div>
+
+  <form class="upload upload-grid"
+        hx-post="/upload"
+        hx-target="#dataset_area"
+        hx-swap="innerHTML"
+        enctype="multipart/form-data">
+    <label class="file-card">
+      <span class="file-card-title">Workbook A</span>
+      <span class="file-card-help">Choose either the Value or Labels export.</span>
+      <input type="file" name="file" accept=".xlsx" required />
+    </label>
+
+    <label class="file-card">
+      <span class="file-card-title">Workbook B</span>
+      <span class="file-card-help">Choose the remaining Toluna export.</span>
+      <input type="file" name="value_file" accept=".xlsx" required />
+    </label>
+
+    <div class="upload-actions">
+      <button class="btn primary btn-wide" type="submit">Upload Files</button>
+    </div>
+  </form>
+</section>
+
+<div id="dataset_area"></div>
+<div id="result_area"></div>
+
+{% endblock %}

@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+
+backup/
+Working Versions/
+TA CSV/
+
+*.zip
+
+app/__pycache__/
+tests/__pycache__/

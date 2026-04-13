@@ -1,0 +1,376 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Crosstab Builder</title>
+  <link rel="stylesheet" href="/static/style.css">
+<style>
+  .mrbox{ max-height: 220px; overflow:auto; border:1px solid #e6e8ee; border-radius:12px; padding:10px; margin-top:10px; background:#fafbff; }
+  .mritem{ display:flex; gap:10px; align-items:center; margin:6px 0; font-size:13px; }
+  .mritem input{ width:auto; }
+</style>
+</head>
+<body>
+  <div class="container">
+    <h1>Crosstab Builder</h1>
+    <p><strong>File:</strong> {{filename}}</p>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Single x Single</h2>
+        <form id="ctForm">
+          <input type="hidden" name="ds_id" value="{{ds_id}}">
+          <label>Row variable</label>
+          <select name="row" required>
+            {% for c in cols %}<option value="{{c}}">{{c}}</option>{% endfor %}
+          </select>
+
+          <label>Column variable</label>
+          <select name="col" required>
+            {% for c in cols %}<option value="{{c}}">{{c}}</option>{% endfor %}
+          </select>
+
+          <label>Weight variable (optional)</label>
+          <select name="weight">
+            <option value="">(none)</option>
+            {% for c in weight_cols %}<option value="{{c}}">{{c}}</option>{% endfor %}
+          </select>
+
+          <label>Display</label>
+          <select name="mode">
+            <option value="count">Count</option>
+            <option value="row%">Row %</option>
+            <option value="col%">Column %</option>
+            <option value="total%">Total %</option>
+          </select>
+
+          <label>Filter (optional)</label>
+          <input type="text" name="filter_expr" placeholder='e.g. Age >= 25 and Age <= 34' />
+
+          <button type="submit">Run Crosstab</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Multi-response (Delimited) x Banner</h2>
+        <p class="note">MR stored in one column like: <code>A;B;C</code></p>
+        <form id="mrForm">
+          <input type="hidden" name="ds_id" value="{{ds_id}}">
+          <label>MR column</label>
+          <select name="mr_col" required>
+            {% for c in cols %}<option value="{{c}}">{{c}}</option>{% endfor %}
+          </select>
+
+          <label>Banner column</label>
+          <select name="banner_col" required>
+            {% for c in cols %}<option value="{{c}}">{{c}}</option>{% endfor %}
+          </select>
+
+          <label>Delimiter</label>
+          <input type="text" name="delimiter" value=";" />
+
+          <label>Weight variable (optional)</label>
+          <select name="weight">
+            <option value="">(none)</option>
+            {% for c in weight_cols %}<option value="{{c}}">{{c}}</option>{% endfor %}
+          </select>
+
+          <label>Display</label>
+          <select name="mode">
+            <option value="count">Count</option>
+            <option value="row%">Row %</option>
+            <option value="col%">Column %</option>
+            <option value="total%">Total %</option>
+          </select>
+
+          <label>Filter (optional)</label>
+          <input type="text" name="filter_expr" placeholder='e.g. Age >= 25 and Age <= 34' />
+
+          <button type="submit">Run MR (Delimited)</button>
+        </form>
+      </div>
+
+      <div class="card">
+  <h2>Multi-response (Dichotomies 0/1) x Banner</h2>
+  <p class="note">Select the MR option columns (1/0) using checkboxes. Example: D2_1..D2_8.</p>
+
+  <form id="mrDichoForm">
+    <input type="hidden" name="ds_id" value="{{ds_id}}">
+    <!-- This hidden field is what the backend expects -->
+    <input type="hidden" name="mr_cols_json" id="mr_cols_hidden" value="">
+
+    <label>Find MR columns (optional)</label>
+    <input type="text" id="mrSearch" placeholder="Type to filter columns (e.g. D2_)" />
+
+    <div class="row" style="margin-top:10px; gap:12px;">
+      <button type="button" id="mrSelectAll" style="background:#fff;color:#111;">Select all</button>
+      <button type="button" id="mrClearAll" style="background:#fff;color:#111;">Clear</button>
+      <span class="note" id="mrSelectedCount">0 selected</span>
+    </div>
+
+    <div id="mrCheckboxes" class="mrbox">
+      {% for c in cols %}
+        <label class="mritem" data-col="{{c}}">
+          <input type="checkbox" class="mrchk" value="{{c}}">
+          <span>{{c}}</span>
+        </label>
+      {% endfor %}
+    </div>
+
+    <label>Banner column</label>
+    <select name="banner_col" required>
+      {% for c in cols %}<option value="{{c}}">{{c}}</option>{% endfor %}
+    </select>
+
+    <label>Weight variable (optional)</label>
+    <select name="weight">
+      <option value="">(none)</option>
+      {% for c in weight_cols %}<option value="{{c}}">{{c}}</option>{% endfor %}
+    </select>
+
+    <label>Display</label>
+    <select name="mode">
+      <option value="count">Count</option>
+      <option value="row%">Row %</option>
+      <option value="col%">Column %</option>
+      <option value="total%">Total %</option>
+    </select>
+
+    <label>Filter (optional)</label>
+    <input type="text" name="filter_expr" placeholder='e.g. Age >= 25 and Age <= 34' />
+
+    <button type="submit">Run MR (Dichotomies)</button>
+  </form>
+</div>
+
+    </div>
+
+    <div class="card">
+      <h2>Result</h2>
+      <div id="meta" class="note"></div>
+      <div style="overflow:auto">
+        <table id="resultTable"></table>
+      </div>
+      <div class="row">
+        <button id="exportBtn" disabled>Export Excel</button>
+        <a href="/" class="link">Upload another file</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Preview (first 10 rows)</h2>
+      <div style="overflow:auto">
+        <table>
+          <thead>
+            <tr>
+              {% for c in cols[:12] %}
+              <th>{{c}}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in preview %}
+            <tr>
+              {% for c in cols[:12] %}
+              <td>{{ r.get(c,"") }}</td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="note">Preview shows first 12 columns only.</p>
+    </div>
+  </div>
+
+<script>
+let lastPayload = null;
+
+function renderTable(payload){
+  lastPayload = payload;
+  const table = document.getElementById("resultTable");
+  table.innerHTML = "";
+
+  // Display formatting rules
+  // - Base row is always integer counts.
+  // - For row% / col% modes, show 2 decimals (rounded).
+  const mode = String(payload.mode || "").toLowerCase();
+  const isPct = mode.includes('%');
+  function formatVal(v) {
+    if (v === null || v === undefined || v === "") return "";
+    const num = Number(v);
+    if (!Number.isFinite(num)) return String(v);
+
+    // counts
+    if (!isPct) {
+      if (Number.isInteger(num)) return String(num);
+      // weighted bases / weighted counts can be fractional
+      return num.toFixed(2);
+    }
+
+    // percentages
+    return num.toFixed(2);
+  }
+
+  // Base rows are counts, even when display mode is %
+  function formatCount(v) {
+    if (v === null || v === undefined || v === "") return "";
+    const num = Number(v);
+    if (!Number.isFinite(num)) return String(v);
+    if (Math.abs(num - Math.round(num)) < 1e-9) return String(Math.round(num));
+    return num.toFixed(2);
+  }
+
+  const thead = document.createElement("thead");
+  const hr = document.createElement("tr");
+  hr.appendChild(document.createElement("th"));
+  payload.columns.forEach(c=>{
+    const th=document.createElement("th");
+    th.textContent=c;
+    hr.appendChild(th);
+  });
+  thead.appendChild(hr);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  // Base row (shown between header and first data row)
+  if (payload && payload.bases && ((Array.isArray(payload.bases.col) && payload.bases.col.length >= 1) || payload.bases.col_base)) {
+    const trb = document.createElement("tr");
+    const thb = document.createElement("th");
+    thb.textContent = "Base";
+    thb.style.textAlign = "left";
+    trb.appendChild(thb);
+    for (let j = 0; j < payload.columns.length; j++) {
+      const tdb = document.createElement("td");
+      const colArr = Array.isArray(payload.bases.col) ? payload.bases.col : null;
+      const colMap = payload.bases.col_base || {};
+      const v = colArr ? (j < colArr.length ? colArr[j] : "") : (colMap[String(payload.columns[j])] ?? "");
+      tdb.textContent = formatCount(v);
+      tdb.style.fontWeight = "600";
+      trb.appendChild(tdb);
+    }
+    tbody.appendChild(trb);
+  }
+payload.index.forEach((idx,i)=>{
+    const tr=document.createElement("tr");
+    const th=document.createElement("th");
+    th.textContent=idx;
+    tr.appendChild(th);
+    payload.values[i].forEach(v=>{
+      const td=document.createElement("td");
+      td.textContent = formatVal(v);
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+
+  const meta = document.getElementById("meta");
+  const gb = payload.bases?.grand_base ?? "";
+  meta.textContent = `Grand base: ${gb} | Mode: ${payload.mode} | Weight: ${payload.weight || "(none)"}`;
+
+  document.getElementById("exportBtn").disabled = false;
+}
+
+async function postForm(url, formEl){
+  const fd = new FormData(formEl);
+  const res = await fetch(url, {method:"POST", body: fd});
+  if(!res.ok){
+    const txt = await res.text();
+    alert("Error: " + txt);
+    return;
+  }
+  const payload = await res.json();
+  renderTable(payload);
+}
+
+document.getElementById("ctForm").addEventListener("submit", (e)=>{
+  e.preventDefault();
+  postForm("/api/crosstab", e.target);
+});
+
+document.getElementById("mrForm").addEventListener("submit", (e)=>{
+  e.preventDefault();
+  postForm("/api/crosstab_mr_delimited", e.target);
+});
+
+document.getElementById("mrDichoForm").addEventListener("submit", (e)=>{
+  e.preventDefault();
+  updateMrHidden();
+  const v = document.getElementById("mr_cols_hidden").value.trim();
+  if(!v || v === "[]"){ alert("Please select at least one MR column."); return; }
+  postForm("/api/crosstab_mr_dichotomies", e.target);
+});
+document.getElementById("exportBtn").addEventListener("click", async ()=>{
+  if(!lastPayload) return;
+  const payload = {
+    table_title: "Crosstab Export",
+    index: lastPayload.index,
+    columns: lastPayload.columns,
+    values: lastPayload.values,
+    bases: lastPayload.bases
+  };
+  const res = await fetch("/api/export_xlsx", {
+    method:"POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify(payload)
+  });
+  if(!res.ok){ alert("Export failed"); return; }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "crosstab.xlsx";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+});
+
+// ----- MR Dichotomies checkbox helpers -----
+function updateMrHidden(){
+  const checked = Array.from(document.querySelectorAll(".mrchk:checked")).map(x=>x.value);
+  document.getElementById("mr_cols_hidden").value = JSON.stringify(checked);
+  const el = document.getElementById("mrSelectedCount");
+  if(el) el.textContent = `${checked.length} selected`;
+}
+
+const mrBox = document.getElementById("mrCheckboxes");
+if(mrBox){
+  mrBox.addEventListener("change", (e)=>{
+    if(e.target && e.target.classList.contains("mrchk")) updateMrHidden();
+  });
+}
+
+const mrSelectAll = document.getElementById("mrSelectAll");
+if(mrSelectAll){
+  mrSelectAll.addEventListener("click", ()=>{
+    document.querySelectorAll(".mrchk").forEach(x=>{ x.checked = true; });
+    updateMrHidden();
+  });
+}
+
+const mrClearAll = document.getElementById("mrClearAll");
+if(mrClearAll){
+  mrClearAll.addEventListener("click", ()=>{
+    document.querySelectorAll(".mrchk").forEach(x=>{ x.checked = false; });
+    updateMrHidden();
+  });
+}
+
+const mrSearch = document.getElementById("mrSearch");
+if(mrSearch){
+  mrSearch.addEventListener("input", ()=>{
+    const q = mrSearch.value.toLowerCase().trim();
+    document.querySelectorAll("#mrCheckboxes .mritem").forEach(item=>{
+      const col = (item.getAttribute("data-col") || "").toLowerCase();
+      item.style.display = (!q || col.includes(q)) ? "flex" : "none";
+    });
+  });
+}
+
+updateMrHidden();
+
+</script>
+</body>
+</html>

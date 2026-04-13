@@ -1,0 +1,40 @@
+<div class="muted">
+  Result:
+  {% if result.qtype == 'SR' %}
+    <span class="pill">{{ result.row_var }}</span> × <span class="pill">{{ result.col_var }}</span>
+  {% else %}
+    <span class="pill">MR</span> × <span class="pill">{{ result.col_var }}</span>
+  {% endif %}
+  {% if result.weight %}<span class="pill">Weight: {{ result.weight }}</span>{% endif %}
+</div>
+
+{% if result.qtype == 'SR' %}
+  {% if result.bases_html %}
+    <h3 class="mt">Base (top row)</h3>
+    <div class="mt">{{ result.bases_html | safe }}</div>
+  {% endif %}
+  {% for t in result.tables %}
+    <h3 class="mt">{{ t.label }}</h3>
+    <div class="mt">{{ t.html | safe }}</div>
+  {% endfor %}
+{% else %}
+  {% for sec in result.mr_sections %}
+    <h3 class="mt">{{ sec.title }}</h3>
+    {% if sec.bases_html %}
+      <div class="muted">Base</div>
+      <div class="mt">{{ sec.bases_html | safe }}</div>
+    {% endif %}
+    {% if sec.counts_html %}
+      <div class="muted mt">Counts</div>
+      <div class="mt">{{ sec.counts_html | safe }}</div>
+    {% endif %}
+    {% if sec.rowpct_html %}
+      <div class="muted mt">Row %</div>
+      <div class="mt">{{ sec.rowpct_html | safe }}</div>
+    {% endif %}
+    {% if sec.colpct_html %}
+      <div class="muted mt">Column %</div>
+      <div class="mt">{{ sec.colpct_html | safe }}</div>
+    {% endif %}
+  {% endfor %}
+{% endif %}

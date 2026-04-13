@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+jinja2
+python-multipart
+polars
+openpyxl
+# Optional for Excel uploads:
+pandas
+pyarrow

@@ -1,0 +1,456 @@
+{% macro short_label(text, limit=72) -%}
+  {%- set value = text|string -%}
+  {{ value if value|length <= limit else value[:limit - 3] ~ '...' }}
+{%- endmacro %}
+
+<div class="card">
+  <div class="section-head">
+    <div>
+      <div class="eyebrow">Step 2</div>
+      <h2>Build your crosstab</h2>
+      <p class="muted">Work through the sections below from top to bottom.</p>
+    </div>
+    <div class="pillrow">
+      <div class="pill"><b>{{ job.name }}</b></div>
+      <div class="pill">job_id: {{ job.id }}</div>
+      <div class="pill">dichotomies: {{ job.dich_cols|length }}</div>
+      <div class="pill">mr groups: {{ job.mr_detection.mr_groups|length }}</div>
+    </div>
+  </div>
+
+  <form class="workspace-form"
+        hx-post="/run"
+        hx-target="#result_area"
+        hx-swap="innerHTML">
+    <input type="hidden" name="job_id" value="{{ job.id }}" />
+
+    <section class="setup-card">
+      <div class="setup-card-head">
+        <div class="step-badge">1</div>
+        <div>
+          <h3>Question setup</h3>
+          <p class="muted">Choose the table type and, if needed, the MR options for a single multiple-response question.</p>
+        </div>
+      </div>
+
+      <div class="field-grid">
+        <div class="field">
+          <label>Question type</label>
+          <select name="qtype"
+                  title=""
+                  data-qtype-select
+                  onchange="(function(select){const form=select.form;if(!form)return;const isMR=select.value==='mr';form.querySelectorAll('[data-sr-only]').forEach((el)=>{el.hidden=isMR;el.style.display=isMR?'none':(el.dataset.display||'');});form.querySelectorAll('[data-mr-only]').forEach((el)=>{el.hidden=!isMR;el.style.display=!isMR?'none':(el.dataset.display||'');});})(this);">
+            <option value="sr" selected>Single response</option>
+            <option value="mr">Multiple response (dichotomies)</option>
+          </select>
+          <p class="help">MR output rows use the selected MR options, not respondent IDs.</p>
+        </div>
+
+        <div class="field field-span-2" data-mr-only data-display="block" hidden>
+          <label>MR columns</label>
+          <select name="mr_cols" multiple size="8" class="mono" title="">
+            {% for group in job.mr_detection.mr_groups %}
+              <optgroup label="{{ group.stem }}">
+                {% for column in group.columns %}
+                  {% set option_idx = loop.index0 %}
+                  <option value="{{ column }}" title="{{ column }}">{{ short_label(group.options[option_idx]) }}</option>
+                {% endfor %}
+              </optgroup>
+            {% endfor %}
+            {% if job.mr_detection.non_mr_columns %}
+              <optgroup label="Other binary columns">
+                {% for c in job.mr_detection.non_mr_columns %}
+                  {% if c in job.dich_cols %}
+                    <option value="{{ c }}" title="{{ c }}">{{ short_label(c) }}</option>
+                  {% endif %}
+                {% endfor %}
+              </optgroup>
+            {% endif %}
+          </select>
+          <p class="help">Only used for MR mode. Auto-detected MR groups are shown first. Hold Ctrl (Windows) or Cmd (Mac) to select multiple options.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="setup-card">
+      <div class="setup-card-head">
+        <div class="step-badge">2</div>
+        <div>
+          <h3>Variables</h3>
+          <p class="muted">Pick the row question first. If it is a concept-style question, you can compare that same question across concepts here; otherwise choose the column banner normally. Layer 2 is optional.</p>
+        </div>
+      </div>
+
+      <div class="variable-layout">
+        <div class="field" data-sr-only data-display="block">
+          <label>Row variable</label>
+          <select name="row_var" title="">
+            {% for c in job.columns %}
+              {% set concept_group = job.concept_detection.member_to_group.get(c) if job.concept_detection and job.concept_detection.member_to_group else none %}
+              <option value="{{ c }}"
+                      title="{{ c }}"
+                      data-concept-family="{{ concept_group.family_key if concept_group else '' }}"
+                      data-concept-label="{{ concept_group.label if concept_group else '' }}">{{ short_label(c) }}</option>
+            {% endfor %}
+          </select>
+          {% set concept_groups = job.concept_detection.concept_groups if job.concept_detection else [] %}
+          <div class="field" style="margin-top:12px;">
+            <label>Concept comparison for selected row</label>
+            <label><input type="checkbox" name="compare_concepts" data-concept-toggle> Compare this row across concepts</label>
+            <p class="help" data-concept-help>
+              {% if concept_groups %}
+                Choose a concept-style row question first. When available, this turns the concept versions of that same question into banner columns C1, C2, C3, and so on.
+              {% else %}
+                No concept-style wide groups were detected in this upload.
+              {% endif %}
+            </p>
+          </div>
+        </div>
+
+        <div class="swap-inline" data-sr-only data-display="flex">
+          <button type="button" class="btn" data-swap-row-col>Swap Row / Column</button>
+          <p class="help">Use this when you want to flip the same two variables quickly.</p>
+        </div>
+
+        <div class="field column-stack">
+          <div class="field">
+            <label>Column variable (Layer 1)</label>
+            <select name="col_var" required title="" data-column-select="primary">
+              <option value="(none)">(none)</option>
+              {% for c in job.columns %}
+                <option value="{{ c }}" title="{{ c }}">{{ short_label(c) }}</option>
+              {% endfor %}
+            </select>
+            <p class="help" data-col-var1-help>Choose the main banner variable. In concept comparison mode, this is optional and becomes the top banner if selected.</p>
+          </div>
+
+          <div class="field">
+            <label>Column variable (Layer 2, optional)</label>
+            <select name="col_var2" title="" data-column-select="secondary">
+              <option value="(none)" selected>(none)</option>
+              {% for c in job.columns %}
+                <option value="{{ c }}" title="{{ c }}">{{ short_label(c) }}</option>
+              {% endfor %}
+            </select>
+            <p class="help" data-col-var2-help>Layer 2 appears as a child header under Layer 1 in preview and export.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="setup-card">
+      <div class="setup-card-head">
+        <div class="step-badge">3</div>
+        <div>
+          <h3>Output and display</h3>
+          <p class="muted">Choose what the table should contain and how it should look in preview and export.</p>
+        </div>
+      </div>
+
+      <div class="option-groups">
+        <div class="option-card">
+          <div class="option-card-title">Table contents</div>
+          <p class="help">These options control which tables and structural summary rows are generated.</p>
+          <div class="checks checks-compact">
+            <label><input type="checkbox" name="out_counts"> Counts</label>
+            <label><input type="checkbox" name="out_rowpct"> Row %</label>
+            <label><input type="checkbox" name="out_colpct" checked> Column %</label>
+          </div>
+        </div>
+
+        <div class="option-card">
+          <div class="option-card-title">Display</div>
+          <p class="help">These options only affect how rows and percentages are displayed.</p>
+          <div class="checks checks-compact">
+            <label><input type="checkbox" name="show_row_codes" data-preview-autorefresh> Show row codes</label>
+            <label><input type="checkbox" name="pct_suffix" checked data-preview-autorefresh> Show % sign</label>
+            <label><input type="checkbox" name="include_base" checked data-preview-autorefresh> Base</label>
+            <label><input type="checkbox" name="include_totals" checked data-preview-autorefresh> Total column + Base row</label>
+            <label><input type="checkbox" name="include_top2_box" data-preview-autorefresh> Top 2 Box</label>
+            <label><input type="checkbox" name="include_bottom2_box" data-preview-autorefresh> Bottom 2 Box</label>
+          </div>
+        </div>
+
+        <div class="option-card">
+          <div class="option-card-title">Row order</div>
+          <p class="help">Single-response rows sort by raw numeric code. Box rows follow the selected direction.</p>
+          <select name="row_sort_mode" title="">
+            <option value="code_asc" selected>Raw code ascending</option>
+            <option value="code_desc">Raw code descending</option>
+          </select>
+        </div>
+      </div>
+    </section>
+
+    <div class="run-bar">
+      <div>
+        <div class="run-bar-title">Ready to preview?</div>
+        <p class="muted">Run the crosstab to open the preview and export tools below.</p>
+      </div>
+      <div class="run-actions">
+        <button class="btn btn-wide" type="submit" name="transpose_table" value="1" data-mr-only data-display="inline-flex" hidden>Transpose Output Table</button>
+        <button class="btn primary btn-wide" type="submit">Run Crosstab</button>
+      </div>
+    </div>
+  </form>
+</div>
+
+<script>
+(() => {
+  const forms = document.querySelectorAll('form[hx-post="/run"]');
+  const form = forms[forms.length - 1];
+  if (!form) return;
+  const prefsKey = "crosstab_run_preferences_v1";
+  const swapBtn = form.querySelector("[data-swap-row-col]");
+  const swapWrap = swapBtn ? swapBtn.closest(".swap-inline") : null;
+  const rowSelect = form.querySelector('select[name="row_var"]');
+  const colSelect = form.querySelector('select[name="col_var"]');
+  const colSelect2 = form.querySelector('select[name="col_var2"]');
+  const qtypeSelect = form.querySelector("[data-qtype-select]");
+  const conceptToggle = form.querySelector("[data-concept-toggle]");
+  const conceptHelp = form.querySelector("[data-concept-help]");
+  const colVar1Help = form.querySelector("[data-col-var1-help]");
+  const colVar2Help = form.querySelector("[data-col-var2-help]");
+  const previewAutoRefreshFields = Array.from(form.querySelectorAll("[data-preview-autorefresh]"));
+  const srOnlySections = Array.from(form.querySelectorAll("[data-sr-only]"));
+  const mrOnlySections = Array.from(form.querySelectorAll("[data-mr-only]"));
+  const columnSelects = Array.from(form.querySelectorAll("[data-column-select]"));
+  const prefNames = [
+    "qtype",
+    "out_counts",
+    "out_rowpct",
+    "out_colpct",
+    "show_row_codes",
+    "compare_concepts",
+    "include_top2_box",
+    "include_bottom2_box",
+    "pct_suffix",
+    "include_base",
+    "include_totals",
+    "row_sort_mode",
+  ];
+  const defaultPrefs = {
+    qtype: "sr",
+    out_counts: false,
+    out_rowpct: false,
+    out_colpct: true,
+    show_row_codes: false,
+    compare_concepts: false,
+    include_top2_box: false,
+    include_bottom2_box: false,
+    pct_suffix: true,
+    include_base: true,
+    include_totals: true,
+    row_sort_mode: "code_asc",
+  };
+
+  const applyPrefs = (prefs) => {
+    prefNames.forEach((name) => {
+      const field = form.elements.namedItem(name);
+      if (!field) return;
+      const value = Object.prototype.hasOwnProperty.call(prefs, name) ? prefs[name] : defaultPrefs[name];
+      if (field instanceof RadioNodeList) return;
+      if (field.type === "checkbox") {
+        field.checked = Boolean(value);
+      } else if (typeof value === "string") {
+        field.value = value;
+      }
+    });
+  };
+
+  const syncQuestionTypeLayout = () => {
+    if (!qtypeSelect) return;
+    const isMR = qtypeSelect.value === "mr";
+    srOnlySections.forEach((section) => {
+      section.hidden = isMR;
+      section.style.display = isMR ? "none" : (section.dataset.display || "");
+    });
+    mrOnlySections.forEach((section) => {
+      section.hidden = !isMR;
+      section.style.display = !isMR ? "none" : (section.dataset.display || "");
+    });
+    if (swapWrap) {
+      swapWrap.hidden = isMR;
+      swapWrap.style.display = isMR ? "none" : (swapWrap.dataset.display || "flex");
+    }
+    if (isMR && conceptToggle) {
+      conceptToggle.checked = false;
+    }
+    syncConceptControls();
+  };
+
+  const firstRealOptionValue = (select) => {
+    if (!select || !select.options) return "";
+    const option = Array.from(select.options).find((item) => item.value && item.value !== "(none)");
+    return option ? option.value : "";
+  };
+
+  const selectedRowOption = () => {
+    if (!rowSelect || !rowSelect.selectedOptions || !rowSelect.selectedOptions[0]) return null;
+    return rowSelect.selectedOptions[0];
+  };
+
+  const syncConceptControls = () => {
+    const isMR = qtypeSelect && qtypeSelect.value === "mr";
+    const selectedOption = selectedRowOption();
+    const conceptFamily = selectedOption ? (selectedOption.dataset.conceptFamily || "").trim() : "";
+    const conceptLabel = selectedOption ? (selectedOption.dataset.conceptLabel || "").trim() : "";
+    const hasConceptRow = Boolean(conceptFamily);
+
+    if (conceptToggle) {
+      conceptToggle.disabled = isMR;
+      if (conceptToggle.disabled) {
+        conceptToggle.checked = false;
+      }
+      conceptToggle.parentElement.style.opacity = conceptToggle.disabled ? "0.65" : "1";
+    }
+
+    const compareEnabled = Boolean(conceptToggle && conceptToggle.checked && !conceptToggle.disabled && hasConceptRow);
+    columnSelects.forEach((select) => {
+      if (compareEnabled) {
+        select.dataset.savedTitle = select.title || "";
+        select.title = select === colSelect
+          ? "Optional in concept comparison mode; used as the top banner layer above C1, C2, C3, ..."
+          : "Unavailable in concept comparison mode";
+      } else if (select.dataset.savedTitle) {
+        select.title = select.dataset.savedTitle;
+      }
+    });
+    if (colSelect) {
+      colSelect.required = !compareEnabled;
+      if (!compareEnabled && colSelect.value === "(none)") {
+        const fallbackValue = firstRealOptionValue(colSelect);
+        if (fallbackValue) {
+          colSelect.value = fallbackValue;
+        }
+      }
+      syncSelectTitle(colSelect);
+    }
+    if (colSelect2) {
+      colSelect2.disabled = compareEnabled;
+      if (compareEnabled) {
+        colSelect2.value = "(none)";
+      }
+      syncSelectTitle(colSelect2);
+    }
+    if (colVar1Help) {
+      colVar1Help.textContent = compareEnabled
+        ? "Layer 1 is optional in concept comparison mode. Leave it as (none) for plain C1, C2, C3 columns, or choose a variable to add a top banner above them."
+        : "Choose the main banner variable for a normal crosstab.";
+    }
+    if (colVar2Help) {
+      colVar2Help.textContent = compareEnabled
+        ? "Layer 2 is unavailable in concept comparison mode. Layer 1 becomes the top banner and C1, C2, C3, and so on appear underneath."
+        : "Layer 2 appears as a child header under Layer 1 in preview and export.";
+    }
+
+    if (conceptHelp) {
+      if (isMR) {
+        conceptHelp.textContent = "Concept comparison is only available in single-response mode.";
+      } else if (!hasConceptRow) {
+        conceptHelp.textContent = "This selected row is not part of a detected concept family. You can still tick the checkbox, but the run will only work for rows like Concept 1: Q1..., Concept 1: Q2..., and so on.";
+      } else if (compareEnabled) {
+        conceptHelp.textContent = `${conceptLabel} will be compared across concepts, with your Layer 1 column variable as the top banner and C1, C2, C3, and so on underneath.`;
+      } else {
+        conceptHelp.textContent = `${conceptLabel} is available for concept comparison. Turn this on to use your Layer 1 column variable as the top banner and C1, C2, C3, and so on underneath.`;
+      }
+    }
+  };
+
+  const readPrefs = () => {
+    try {
+      const raw = window.localStorage.getItem(prefsKey);
+      return raw ? JSON.parse(raw) : null;
+    } catch (error) {
+      return null;
+    }
+  };
+
+  const savePrefs = () => {
+    const prefs = {};
+    prefNames.forEach((name) => {
+      const field = form.elements.namedItem(name);
+      if (!field || field instanceof RadioNodeList) return;
+      prefs[name] = field.type === "checkbox" ? field.checked : field.value;
+    });
+    try {
+      window.localStorage.setItem(prefsKey, JSON.stringify(prefs));
+    } catch (error) {
+      // Ignore storage failures and keep the form usable.
+    }
+  };
+
+  const requestPreviewRefresh = () => {
+    savePrefs();
+    if (typeof form.requestSubmit === "function") {
+      form.requestSubmit();
+      return;
+    }
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  };
+
+  const syncSelectTitle = (select) => {
+    if (!select || !select.options) return;
+    if (select.multiple) {
+      const values = Array.from(select.selectedOptions || []).map((option) => option.value || option.textContent || "");
+      select.title = values.join("\n");
+      return;
+    }
+    const selected = select.selectedOptions && select.selectedOptions[0];
+    select.title = selected ? (selected.value || selected.textContent || "") : "";
+  };
+
+  applyPrefs({ ...defaultPrefs, ...(readPrefs() || {}) });
+  syncQuestionTypeLayout();
+
+  if (swapBtn && rowSelect && colSelect) {
+    swapBtn.addEventListener("click", () => {
+      const rowValue = rowSelect.value;
+      rowSelect.value = colSelect.value;
+      colSelect.value = rowValue;
+      syncSelectTitle(rowSelect);
+      syncSelectTitle(colSelect);
+    });
+  }
+
+  form.querySelectorAll("select").forEach((select) => {
+    syncSelectTitle(select);
+    select.addEventListener("change", () => {
+      syncSelectTitle(select);
+      if (select === rowSelect) {
+        syncConceptControls();
+      }
+    });
+  });
+  if (qtypeSelect) {
+    qtypeSelect.addEventListener("change", syncQuestionTypeLayout);
+  }
+  if (conceptToggle) {
+    conceptToggle.addEventListener("change", syncConceptControls);
+  }
+  previewAutoRefreshFields.forEach((field) => {
+    field.addEventListener("change", requestPreviewRefresh);
+  });
+
+  form.addEventListener("submit", () => {
+    const isMR = qtypeSelect && qtypeSelect.value === "mr";
+    const compareEnabled = Boolean(conceptToggle && conceptToggle.checked && !conceptToggle.disabled);
+    if (colSelect && colSelect.value === "(none)" && (isMR || !compareEnabled)) {
+      const fallbackValue = firstRealOptionValue(colSelect);
+      if (fallbackValue) {
+        colSelect.value = fallbackValue;
+        syncSelectTitle(colSelect);
+      }
+    }
+  });
+
+  syncConceptControls();
+
+  prefNames.forEach((name) => {
+    const field = form.elements.namedItem(name);
+    if (!field || field instanceof RadioNodeList) return;
+    field.addEventListener("change", savePrefs);
+  });
+  form.addEventListener("submit", savePrefs);
+})();
+</script>

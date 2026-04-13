@@ -1,0 +1,114 @@
+<div class="dataset-header">
+  <div class="dataset-title">Loaded dataset</div>
+  <div class="dataset-meta">
+    <strong class="file-name">{{ meta.filename }}</strong>
+    <span class="pill">job_id: {{ meta.job_id }}</span>
+  </div>
+  <div class="muted mt">
+    Detected dichotomy columns: <strong>{{ meta.dich_cols|length }}</strong> • Detected MR groups: <strong>{{ meta.mr_groups|length }}</strong>
+  </div>
+</div>
+
+<form class="mt form-card" hx-post="/run" hx-target="#preview_area" hx-swap="innerHTML">
+  <input type="hidden" name="job_id" value="{{ meta.job_id }}"/>
+
+  <div class="form-grid">
+    <div class="form-group">
+      <label>Row variable (SR only)</label>
+      <select name="row_var">
+        {% for c in meta.columns %}
+          <option value="{{ c }}">{{ c }}</option>
+        {% endfor %}
+      </select>
+      <div class="hint">For Multiple response, rows are the MR options.</div>
+    </div>
+
+    <div class="form-group">
+      <label>Column variable (Layer 1)</label>
+      <select name="col_var" required>
+        {% for c in meta.columns %}
+          <option value="{{ c }}">{{ c }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+
+  <div class="form-grid mt">
+    <div class="form-group">
+      <label>Column variable (Layer 2, optional)</label>
+      <select name="col_var2">
+        <option value="">(none)</option>
+        {% for c in meta.columns %}
+          <option value="{{ c }}">{{ c }}</option>
+        {% endfor %}
+      </select>
+      <div class="hint">Layer 2 is combined as “Layer1 | Layer2”.</div>
+    </div>
+
+    <div class="form-group">
+      <label>Question type</label>
+      <select name="qtype">
+        <option value="SR">Single response</option>
+        <option value="MR">Multiple response (dichotomies)</option>
+      </select>
+      <div class="hint">MR: choose a detected group OR use “MR columns (advanced)” to pick exact 0/1 (or Yes/No, True/False) columns.</div>
+    </div>
+  </div>
+
+  <div class="form-grid mt">
+    <div class="form-group">
+      <label>Multiple-response groups (auto)</label>
+      {% if meta.mr_groups and meta.mr_groups|length > 0 %}
+        <select name="mr_groups" multiple size="6">
+          {% for g in meta.mr_groups %}
+            <option value="{{ g }}">{{ g }}</option>
+          {% endfor %}
+        </select>
+        <div class="hint">Hold Ctrl (Windows) / Cmd (Mac) to select multiple.</div>
+      {% else %}
+        <div class="hint warn">No MR groups detected from dichotomy prefixes.</div>
+      {% endif %}
+    </div>
+
+    <div class="form-group">
+      <label>MR columns (advanced — pick exact 0/1 or Yes/No columns)</label>
+      {% if meta.dich_cols and meta.dich_cols|length > 0 %}
+        <select name="mr_cols" multiple size="6">
+          {% for c in meta.dich_cols %}
+            <option value="{{ c }}">{{ c }}</option>
+          {% endfor %}
+        </select>
+        <div class="hint">Use this when group detection is incomplete. Select the dichotomy columns for ONE MR question.</div>
+      {% else %}
+        <div class="hint warn">No dichotomy columns detected.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="form-grid mt">
+    <div class="form-group">
+      <label>Weight column (optional)</label>
+      <select name="weight">
+        <option value="">(none)</option>
+        {% for c in meta.columns %}
+          <option value="{{ c }}">{{ c }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label>Output options</label>
+      <div class="checks">
+        <label class="chk"><input type="checkbox" name="include_counts" checked> Counts</label>
+        <label class="chk"><input type="checkbox" name="include_row_pct"> Row %</label>
+        <label class="chk"><input type="checkbox" name="include_col_pct"> Column %</label>
+        <label class="chk"><input type="checkbox" name="include_bases" checked> Base</label>
+        <label class="chk"><input type="checkbox" name="include_totals" checked> Total column + Base row</label>
+      </div>
+    </div>
+  </div>
+
+  <div class="actions-row mt">
+    <button class="primary" type="submit">Run Crosstab</button>
+  </div>
+</form>

@@ -1,0 +1,241 @@
+v19 – Absolute Rounding Update
+--------------------------------
+- All displayed Row % and Column % values are rounded to whole numbers (no decimals).
+- Exported Excel respects the same rounding logic.
+- % sign still applied when 'Show % sign' toggle is ON.
+- Base rows remain numeric counts.
+
+Note:
+This version only changes rounding/formatting logic.
+Core crosstab math and bases are unchanged.
+
+2026-04-11 13:18:56 +08:00 - Debug Session Log
+---------------------------------------------
+Files updated:
+- app/main.py
+
+Changes made:
+- Fixed template initialization to consistently use the root templates directory.
+- Added upload validation for missing filenames and empty dataset files.
+- Wrapped dataset and label parsing with clearer 400-level error handling.
+- Applied uploaded label ordering/text mappings to generated crosstab results.
+- Added a guard so /run returns an error when no output type is selected.
+
+Rollback notes:
+- In app/main.py, restore the previous duplicate Jinja2Templates setup if you need the old template path behavior.
+- Remove the new upload validation/error-handling blocks in the upload() route to return to prior behavior.
+- Remove the _apply_labels_to_result(job_id, result) call in run() to disable label mapping.
+- Remove the \"Select at least one output option.\" guard in run() to restore the old empty-output behavior.
+
+2026-04-11 13:18:56 +08:00 - UI Cleanup Log
+------------------------------------------
+Files updated:
+- templates/index.html
+- app/main.py
+
+Changes made:
+- Removed the optional labels upload file input from the main upload form.
+- Removed backend support for labels_file uploads and label post-processing.
+- Removed the unused has_labels job metadata field tied to labels upload.
+
+Rollback notes:
+- Re-add the labels_file input in templates/index.html if you want the second upload picker back.
+- Restore the deleted label helper functions and labels_file handling in app/main.py to bring back label mapping support.
+
+2026-04-11 15:05:00 +08:00 - Response Ordering Framework
+-------------------------------------------------------
+Files updated:
+- app/main.py
+- templates/_result_panel.html
+- tests/test_response_ordering.py
+
+Changes made:
+- Replaced alphabetical row/column ordering with a mapping-first tabulation pipeline.
+- Added workbook discovery for sibling Value.xlsx and built question-specific raw-code mappings.
+- Added response normalization for blank handling and numeric string/integer alignment.
+- Added explicit validation for missing question mappings and unmapped raw codes.
+- Kept ordering attached to mapped categories through aggregation, rendering, and export.
+- Added unit tests for label mapping, row order, missing-code detection, and zero-count preservation.
+
+Implementation notes:
+- The current file set does not contain a standalone codebook sheet.
+- Value.xlsx stores coded respondent-level data and the uploaded workbook stores paired display text.
+- Category order is currently derived from first appearance of each raw code while scanning Value.xlsx row order.
+
+Rollback notes:
+- Restore the previous tabulate_sr/tabulate_mr implementations in app/main.py to return to alphabetical category handling.
+- Remove the Value.xlsx mapping loader/helpers and revert upload/run to use the uploaded workbook directly.
+- Delete tests/test_response_ordering.py if you want to remove the new test coverage.
+
+2026-04-11 15:22:00 +08:00 - Explicit Value Upload
+-------------------------------------------------
+Files updated:
+- templates/index.html
+- app/main.py
+
+Changes made:
+- Replaced automatic Value.xlsx discovery with an explicit second upload field.
+- Made the upload flow require both the text dataset workbook and the matching Value.xlsx workbook.
+- Saved uploaded Value.xlsx into the per-job temp folder and built mappings from that file directly.
+
+Rollback notes:
+- Remove the value_file upload input in templates/index.html to return to a single-file upload form.
+- Restore automatic Value.xlsx lookup in app/main.py if you want discovery-based mapping again.
+
+2026-04-11 15:48:00 +08:00 - Numeric Sort And Box Groups
+-------------------------------------------------------
+Files updated:
+- app/main.py
+- templates/_dataset_panel.html
+- tests/test_response_ordering.py
+
+Changes made:
+- Removed Value.xlsx mapping order as a user-facing row-sort choice.
+- Made raw code ascending the default single-response row order.
+- Added raw code descending as the alternate single-response row order.
+- Added optional Top 2 Box and Bottom 2 Box grouped rows.
+- Grouped rows now follow the chosen ascending/descending endpoint direction.
+
+Rollback notes:
+- Restore the old row_sort_mode options in templates/_dataset_panel.html if you want mapping order back.
+- Remove the Top 2 Box / Bottom 2 Box form inputs and related app/main.py logic to return to plain row output.
+
+2026-04-11 16:00:00 +08:00 - Box Row Styling And Column Sort
+-----------------------------------------------------------
+Files updated:
+- app/main.py
+- templates/_result_panel.html
+- static/app.css
+- tests/test_response_ordering.py
+
+Changes made:
+- Added grey shaded, bold-styled preview rows for Top 2 Box and Bottom 2 Box.
+- Applied matching bold grey styling to Top 2 Box and Bottom 2 Box rows in Excel export.
+- Made single-response columns auto-sort ascending by raw numeric code when possible.
+
+Rollback notes:
+- Remove the box-row CSS and template row class logic to return grouped rows to standard styling.
+- Remove automatic column sorting in app/main.py if you want column order to stay in workbook-derived order.
+
+2026-04-11 16:05:00 +08:00 - Working Copy Baseline
+-------------------------------------------------
+Flagged rollback version:
+- v1.0 - baseline version
+
+Rollback source:
+- backup\v1_0_working_copy
+
+Notes:
+- This snapshot is the current approved baseline version.
+- If rollback is requested later, restore from backup\v1_0_working_copy.
+
+2026-04-11 16:26:03 +08:00 - Working Copy Baseline
+-------------------------------------------------
+Flagged rollback version:
+- v2.0 - included t2b, fixed value&label upload, sort row ascending&descending
+
+Rollback source:
+- backup\v2_0_working_copy
+
+Notes:
+- This snapshot includes T2B, fixed value/label upload detection, and ascending/descending row sorting.
+- If rollback is requested later, restore from backup\v2_0_working_copy.
+
+2026-04-11 20:05:00 +08:00 - Working Copy Baseline
+-------------------------------------------------
+Flagged rollback version:
+- v3.0 - fixed preview, and save tables, batch export
+
+Rollback source:
+- backup\v3_0_working_copy
+
+Notes:
+- This snapshot includes the preview/sticky table fixes and saved-table batch export workflow.
+- If rollback is requested later, restore from backup\v3_0_working_copy.
+
+2026-04-11 20:40:00 +08:00 - Automatic MR Detection
+--------------------------------------------------
+Files updated:
+- app/main.py
+- templates/_dataset_panel.html
+- tests/test_response_ordering.py
+
+Changes made:
+- Added automatic multiple-response detection based on normalized column labels and binary-like validation.
+- Added deterministic stem/option splitting across Japanese and English separators before using similarity fallback.
+- Rejected mixed binary/non-binary sibling stems to reduce false positives.
+- Surfaced detected MR groups in the MR selector, with grouped options shown ahead of other binary columns.
+- Added tests for separator-based MR detection, mixed-stem rejection, and similarity fallback grouping.
+
+Rollback notes:
+- Remove the detect_mr_groups helper family in app/main.py to return to plain dichotomy-only MR selection.
+- Remove the MR group pills/optgroups in templates/_dataset_panel.html to restore the earlier flat MR column picker.
+- Remove the MR detection tests from tests/test_response_ordering.py if you want to drop this coverage.
+
+2026-04-11 17:05:00 +08:00 - Saved Output Group Export
+-----------------------------------------------------
+Files updated:
+- app/main.py
+- templates/_result_panel.html
+
+Changes made:
+- Added save-current-output support so users can keep multiple generated tables for later export.
+- Added saved-output export to individual worksheets, with one worksheet per saved output.
+- Added group export to a single worksheet, stacking all saved outputs one after another.
+- Added saved-output status and export controls directly in the preview panel.
+
+Rollback notes:
+- Remove the /save-output and /export-saved routes in app/main.py to disable saved group exports.
+- Remove the saved-output buttons and saved-output list from templates/_result_panel.html to return to single-output export only.
+
+2026-04-11 17:12:00 +08:00 - Delete Saved Output
+------------------------------------------------
+Files updated:
+- app/main.py
+- templates/_result_panel.html
+
+Changes made:
+- Added per-output delete controls for saved group export items.
+- Added a backend route to remove a saved output and refresh the preview panel.
+- Re-numbered remaining saved outputs after deletion so titles stay clean and sequential.
+
+Rollback notes:
+- Remove the /delete-saved-output route in app/main.py to disable saved-item deletion.
+- Remove the Delete buttons from templates/_result_panel.html to return to a read-only saved-output list.
+
+2026-04-11 17:22:00 +08:00 - Saved Output Popup And Manual Ordering
+-------------------------------------------------------------------
+Files updated:
+- app/main.py
+- templates/_result_panel.html
+- static/app.css
+
+Changes made:
+- Moved saved-output management out of the main preview card into a popup window.
+- Added a Manage Saved Outputs button that opens a modal-style saved-output manager.
+- Added manual Move Up and Move Down controls so saved outputs can be reordered before export.
+- Kept the popup open after move/delete actions to support quick multi-step organizing.
+- Moved group export actions into the popup to keep the main preview cleaner.
+
+Rollback notes:
+- Remove the /move-saved-output route in app/main.py to disable manual saved-output ordering.
+- Replace the popup markup in templates/_result_panel.html with the prior inline saved-output display if you want management back on the main page.
+- Remove the saved-modal CSS in static/app.css to return to the earlier non-popup layout.
+
+2026-04-12 10:35:00 +08:00 - Clean Mapping And MR Pipeline
+----------------------------------------------------------
+Files updated:
+- app/main.py
+- tests/test_response_ordering.py
+
+Changes made:
+- Added a codebook-style mapping loader for Value.xlsx sheets that expose question/code/label/order columns.
+- Kept the existing paired respondent-level workbook fallback for current Toluna exports.
+- Added explicit validation for missing mapping fields, duplicate codes, and duplicate order values.
+- Routed SR tabulation through ordered mapping categories so codebook order survives aggregation.
+- Routed MR row construction through question-level mapping when a shared MR question exists in Value.xlsx.
+- Added tests for codebook loading, strict order preservation, duplicate-order rejection, and MR option ordering.
+
+Rollback notes:
+- Remove the codebook mapping helpers from app/main.py if you want to return to the earlier respondent-pair-only mapping flow.
+- Revert the new tests in tests/test_response_ordering.py if you are removing the codebook path.

@@ -1,0 +1,308 @@
+{% macro short_saved_title(text, limit=120) -%}
+  {%- set value = text|string -%}
+  {{ value if value|length <= limit else value[:limit - 3] ~ '...' }}
+{%- endmacro %}
+
+{% macro short_axis_title(text, limit=44) -%}
+  {%- set value = text|string -%}
+  {{ value if value|length <= limit else value[:limit - 3] ~ '...' }}
+{%- endmacro %}
+
+{% if result %}
+  <div class="card">
+    <div class="card-h">
+      <h3>Preview</h3>
+      <div class="muted">Mode: {{ "Multiple response" if result.mode=="mr" else "Single response" }} | Columns: {{ result.col_label_display or result.col_label }}</div>
+      <div class="muted">Rows: {{ result.row_label_display or result.row_label }}</div>
+    </div>
+
+    {% if job.last_saved_message %}
+      <div class="pillrow" style="margin-top:10px;">
+        <div class="pill"><b>{{ job.last_saved_message }}</b></div>
+      </div>
+    {% endif %}
+
+    {% if result.validation %}
+      <div class="pillrow">
+        {% for issue in result.validation %}
+          <div class="pill">{{ issue }}</div>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {% if result.mapping_assumptions %}
+      <details class="preview-notes">
+        <summary>Ordering framework notes</summary>
+        {% for note in result.mapping_assumptions %}
+          <div class="muted">{{ note }}</div>
+        {% endfor %}
+      </details>
+    {% endif %}
+
+    {% for t in result.tables %}
+      <h4 class="section">{{ "Counts" if t.kind=="counts" else ("Row %" if t.kind=="rowpct" else "Column %") }}</h4>
+      <div class="table-wrap">
+        <table class="tbl {% if t.header_layout and t.header_layout.two_layer %}tbl-two-layer{% else %}tbl-one-layer{% endif %}" data-sticky-table>
+          {% set base_row = t.rows[0] if t.rows and t.rows[0].get('__label__') == 'Base' else none %}
+          {% set body_rows = t.rows[1:] if base_row else t.rows %}
+          <thead>
+            {% if t.header_layout and t.header_layout.two_layer %}
+              <tr>
+                <th class="sticky axis-label" rowspan="2" title="{{ result.row_label }}">{{ result.row_label_display or short_axis_title(result.row_label) }}</th>
+                {% for group in t.header_layout.top_groups %}
+                  <th colspan="{{ group.span }}" title="{{ group.label }}" class="group-header{% if not loop.first %} group-divider{% endif %}">{{ short_axis_title(group.label, 28) }}</th>
+                {% endfor %}
+              </tr>
+              <tr>
+                {% for c in t.header_layout.bottom_labels %}
+                  <th class="{% if loop.index0 in t.header_layout.get('group_start_indices', []) %}group-divider{% endif %}">{{ c }}</th>
+                {% endfor %}
+              </tr>
+            {% else %}
+              <tr>
+                <th class="sticky axis-label" title="{{ result.row_label }}">{{ result.row_label_display or short_axis_title(result.row_label) }}</th>
+                {% for c in t.columns %}
+                  <th class="{% if c in t.get('special_count_columns', []) %}base-col{% endif %}">{{ c }}</th>
+                {% endfor %}
+              </tr>
+            {% endif %}
+
+            {% if base_row %}
+              <tr class="base-row header-base-row">
+                <th class="sticky">{{ base_row['__label__'] }}</th>
+                {% for c in t.columns %}
+                  {% set v = base_row.get(c) %}
+                  <th class="{% if c in t.get('special_count_columns', []) %}base-col {% endif %}{% if loop.index0 in t.header_layout.get('group_start_indices', []) %}group-divider{% endif %}">
+                    {% if t.kind=='counts' %}
+                      {% if v is none %}{{ "" }}
+                      {% else %}{{ (v|round(0))|int }}
+                      {% endif %}
+                    {% else %}
+                      {% if v is none %}{% set _base_txt = "" %}
+                      {% else %}
+                        {% set _base_txt = "%d"|format((v|round(0))|int) %}
+                      {% endif %}
+                      {{ _base_txt }}
+                    {% endif %}
+                  </th>
+                {% endfor %}
+              </tr>
+            {% endif %}
+          </thead>
+          <tbody>
+            {% for r in body_rows %}
+              <tr class="{% if r.get('__label__') == 'Base' %}base-row{% elif r.get('__is_box__') %}box-row{% endif %}">
+                <td class="sticky">{{ r['__label__'] }}</td>
+                {% for c in t.columns %}
+                  {% set v = r.get(c) %}
+                  <td class="{% if c in t.get('special_count_columns', []) %}base-col {% endif %}{% if loop.index0 in t.header_layout.get('group_start_indices', []) %}group-divider{% endif %}">
+                    {% if t.kind=='counts' %}
+                      {% if v is none %}{{ "" }}
+                      {% else %}{{ (v|round(0))|int }}
+                      {% endif %}
+                    {% else %}
+                      {% if v is none %}{% set _txt = "" %}
+                      {% else %}
+                        {% set _is_base_row = (r['__label__'] == 'Base') %}
+                        {% set _is_base_col = (c in t.get('special_count_columns', [])) %}
+                        {% set _txt = "%d"|format((v|round(0))|int) %}
+                        {% if pct_suffix and (t.kind in ['rowpct','colpct']) and (not _is_base_row) and (not _is_base_col) %}
+                          {% set _txt = _txt ~ "%" %}
+                        {% endif %}
+                      {% endif %}
+                      {{ _txt }}
+                    {% endif %}
+                  </td>
+                {% endfor %}
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endfor %}
+
+    <div class="pillrow right" style="display:flex;justify-content:flex-end;gap:12px;flex-wrap:wrap;margin-top:14px;">
+      <form hx-post="/save-output/{{ job.id }}"
+            hx-target="#result_area"
+            hx-swap="innerHTML"
+            style="margin:0;">
+        <button class="btn" type="submit">Save Output For Later</button>
+      </form>
+      <button class="btn" type="button" data-open-saved-modal {% if not job.saved_outputs %}disabled{% endif %}>
+        Manage Saved Outputs{% if job.saved_outputs %} ({{ job.saved_outputs|length }}){% endif %}
+      </button>
+      <a class="btn btn-primary" href="/export/{{ job.id }}">Export Current Output</a>
+    </div>
+  </div>
+
+  <div class="saved-modal-backdrop" data-saved-modal-backdrop {% if not job.saved_modal_open %}hidden{% endif %}>
+    <div class="saved-modal" role="dialog" aria-modal="true" aria-label="Saved outputs">
+      <div class="saved-modal-head">
+        <div class="saved-modal-head-copy">
+          <h3>Saved Outputs</h3>
+          <p class="muted">Reorder, delete, or export your saved tables from here.</p>
+        </div>
+        <button class="btn saved-close-btn" type="button" data-close-saved-modal>Close</button>
+      </div>
+
+      {% if job.saved_outputs %}
+        <div class="saved-modal-summary">
+          <div class="pill">{{ job.saved_outputs|length }} saved output{{ "" if job.saved_outputs|length == 1 else "s" }}</div>
+          <div class="muted">Tip: update any sequence numbers you want, then apply all changes together.</div>
+        </div>
+
+        <div class="saved-modal-body">
+          <aside class="saved-reference-panel">
+            <div class="saved-reference-panel-head">
+              <label class="saved-search-label">
+                <span>Search saved outputs</span>
+                <input type="search"
+                       class="saved-search-input"
+                       placeholder="Search by title or number"
+                       data-saved-search />
+              </label>
+            </div>
+            <div class="saved-reference-list">
+              {% for saved in job.saved_outputs %}
+                <a href="#saved-output-{{ loop.index0 }}"
+                   class="saved-reference-item"
+                   data-saved-ref
+                   data-search-text="{{ loop.index }} {{ saved.title|lower }}">
+                  <span class="saved-reference-number">{{ loop.index }}</span>
+                  <span class="saved-reference-text" title="{{ saved.title }}">{{ short_saved_title(saved.title, 68) }}</span>
+                </a>
+              {% endfor %}
+            </div>
+          </aside>
+
+          <div class="saved-output-list">
+            {% for saved in job.saved_outputs %}
+              <div class="saved-output-item"
+                   id="saved-output-{{ loop.index0 }}"
+                   data-saved-item
+                   data-search-text="{{ loop.index }} {{ saved.title|lower }}">
+                <div class="saved-output-main">
+                  <div class="saved-order-chip">{{ loop.index }}</div>
+                  <div class="saved-output-meta">
+                    <div class="saved-output-title" title="{{ saved.title }}">{{ short_saved_title(saved.title) }}</div>
+                    <div class="saved-output-submeta">
+                      <span class="muted">Tables: {{ saved.result.tables|length }}</span>
+                      <span class="muted">Position: {{ loop.index }} of {{ job.saved_outputs|length }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="saved-output-actions">
+                  <label class="saved-sequence-label">
+                    <span>Sequence</span>
+                    <input class="saved-sequence-input"
+                           type="number"
+                           name="seq_{{ loop.index0 }}"
+                           min="1"
+                           max="{{ job.saved_outputs|length }}"
+                           value="{{ loop.index }}"
+                           form="saved-sequence-form" />
+                  </label>
+
+                  <div class="saved-action-row">
+                    <form hx-post="/move-saved-output/{{ job.id }}/{{ loop.index0 }}"
+                          hx-target="#result_area"
+                          hx-swap="innerHTML"
+                          style="margin:0;">
+                      <input type="hidden" name="direction" value="up" />
+                      <button class="btn" type="submit" {% if loop.first %}disabled{% endif %}>Up</button>
+                    </form>
+                    <form hx-post="/move-saved-output/{{ job.id }}/{{ loop.index0 }}"
+                          hx-target="#result_area"
+                          hx-swap="innerHTML"
+                          style="margin:0;">
+                      <input type="hidden" name="direction" value="down" />
+                      <button class="btn" type="submit" {% if loop.last %}disabled{% endif %}>Down</button>
+                    </form>
+                    <form hx-post="/delete-saved-output/{{ job.id }}/{{ loop.index0 }}"
+                          hx-target="#result_area"
+                          hx-swap="innerHTML"
+                          style="margin:0;">
+                      <button type="submit" class="btn">Delete</button>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+
+        <form id="saved-sequence-form"
+              hx-post="/resequence-saved-outputs/{{ job.id }}"
+              hx-target="#result_area"
+              hx-swap="innerHTML"
+              style="display:none;"></form>
+
+        <div class="saved-modal-foot">
+          <button class="btn" type="submit" form="saved-sequence-form">Apply Sequence Changes</button>
+          <a class="btn" href="/export-saved/{{ job.id }}?mode=individual">Export Saved To Individual Sheets</a>
+          <a class="btn btn-primary" href="/export-saved/{{ job.id }}?mode=single">Group Export To One Sheet</a>
+        </div>
+      {% else %}
+        <p class="muted" style="margin-top:10px;">No saved outputs yet.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <script>
+  (() => {
+    const root = document.getElementById("result_area");
+    if (!root) return;
+    const openBtn = root.querySelector("[data-open-saved-modal]");
+    const closeBtn = root.querySelector("[data-close-saved-modal]");
+    const backdrop = root.querySelector("[data-saved-modal-backdrop]");
+    const searchInput = root.querySelector("[data-saved-search]");
+    if (!backdrop) return;
+
+    const openModal = () => { backdrop.hidden = false; };
+    const closeModal = () => { backdrop.hidden = true; };
+
+    if (openBtn) openBtn.addEventListener("click", openModal);
+    if (closeBtn) closeBtn.addEventListener("click", closeModal);
+    backdrop.addEventListener("click", (event) => {
+      if (event.target === backdrop) closeModal();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !backdrop.hidden) closeModal();
+    });
+
+    if (searchInput) {
+      const refs = Array.from(root.querySelectorAll("[data-saved-ref]"));
+      const applyFilter = () => {
+        const query = searchInput.value.trim().toLowerCase();
+        refs.forEach((ref) => {
+          const haystack = (ref.dataset.searchText || "").toLowerCase();
+          const matches = !query || haystack.includes(query);
+          ref.style.display = matches ? "" : "none";
+        });
+      };
+      applyFilter();
+      searchInput.addEventListener("input", applyFilter);
+      searchInput.addEventListener("search", applyFilter);
+    }
+
+    const applyStickyOffsets = () => {
+      const tables = Array.from(root.querySelectorAll("[data-sticky-table]"));
+      tables.forEach((table) => {
+        const headerRows = Array.from(table.querySelectorAll("thead tr"));
+        let offset = 0;
+        headerRows.forEach((row, index) => {
+          const cells = Array.from(row.querySelectorAll("th"));
+          cells.forEach((cell) => {
+            cell.style.top = `${offset}px`;
+          });
+          offset += row.getBoundingClientRect().height;
+        });
+      });
+    };
+
+    applyStickyOffsets();
+    window.addEventListener("resize", applyStickyOffsets);
+  })();
+  </script>
+{% endif %}
