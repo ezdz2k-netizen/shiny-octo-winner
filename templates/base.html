@@ -7,6 +7,65 @@
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/static/app.css" />
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script>
+    (() => {
+      if (window.htmx) return;
+
+      const submitWithFallback = async (form) => {
+        const url = form.getAttribute("hx-post");
+        const targetSelector = form.getAttribute("hx-target");
+        const swapMode = (form.getAttribute("hx-swap") || "innerHTML").trim();
+        if (!url || !targetSelector) return;
+
+        const submitter = form.__fallbackSubmitter || null;
+        const body = new FormData(form);
+        if (submitter && submitter.name) {
+          body.append(submitter.name, submitter.value);
+        }
+
+        const target = document.querySelector(targetSelector);
+        if (!target) return;
+
+        try {
+          const response = await fetch(url, {
+            method: "POST",
+            body,
+            headers: { "X-Requested-With": "XMLHttpRequest" },
+          });
+          const html = await response.text();
+          if (!response.ok) {
+            throw new Error(html || `Request failed with status ${response.status}`);
+          }
+
+          if (swapMode === "outerHTML") {
+            target.outerHTML = html;
+          } else {
+            target.innerHTML = html;
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Request failed.";
+          target.innerHTML = `<div class="card"><p>${message}</p></div>`;
+        } finally {
+          form.__fallbackSubmitter = null;
+        }
+      };
+
+      document.addEventListener("click", (event) => {
+        const button = event.target.closest("button, input[type='submit']");
+        if (!button) return;
+        const form = button.form;
+        if (!form || !form.matches("form[hx-post]")) return;
+        form.__fallbackSubmitter = button;
+      });
+
+      document.addEventListener("submit", (event) => {
+        const form = event.target;
+        if (!(form instanceof HTMLFormElement) || !form.matches("form[hx-post]")) return;
+        event.preventDefault();
+        submitWithFallback(form);
+      });
+    })();
+  </script>
 </head>
 <body>
   <header class="topbar">
