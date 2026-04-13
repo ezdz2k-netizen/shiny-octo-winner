@@ -9,6 +9,19 @@
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script>
     (() => {
+      const activateInlineScripts = (root) => {
+        if (!root || !root.querySelectorAll) return;
+        const scripts = Array.from(root.querySelectorAll("script"));
+        scripts.forEach((oldScript) => {
+          const newScript = document.createElement("script");
+          Array.from(oldScript.attributes).forEach((attr) => {
+            newScript.setAttribute(attr.name, attr.value);
+          });
+          newScript.textContent = oldScript.textContent || "";
+          oldScript.replaceWith(newScript);
+        });
+      };
+
       if (window.htmx) return;
 
       const submitWithFallback = async (form) => {
@@ -41,10 +54,13 @@
             target.outerHTML = html;
           } else {
             target.innerHTML = html;
+            activateInlineScripts(target);
           }
+          document.dispatchEvent(new CustomEvent("crosstab:fallback-complete", { detail: { form } }));
         } catch (error) {
           const message = error instanceof Error ? error.message : "Request failed.";
           target.innerHTML = `<div class="card"><p>${message}</p></div>`;
+          document.dispatchEvent(new CustomEvent("crosstab:fallback-error", { detail: { form, error: message } }));
         } finally {
           form.__fallbackSubmitter = null;
         }
@@ -64,6 +80,134 @@
         event.preventDefault();
         submitWithFallback(form);
       });
+
+      document.addEventListener("crosstab:activate-inline-scripts", (event) => {
+        activateInlineScripts(event.detail && event.detail.root ? event.detail.root : document);
+      });
+    })();
+  </script>
+  <script>
+    (() => {
+      const controllers = new WeakMap();
+
+      const getProgressElements = (form) => {
+        const key = form.getAttribute("data-progress-form");
+        if (!key) return null;
+        const panel = document.querySelector(`[data-progress-panel="${key}"]`);
+        if (!panel) return null;
+        return {
+          panel,
+          percentText: panel.querySelector("[data-progress-percent]"),
+          meter: panel.querySelector("[data-progress-meter]"),
+          buttons: Array.from(form.querySelectorAll('button[type="submit"], input[type="submit"]')),
+        };
+      };
+
+      const setButtonState = (button, busy) => {
+        if (!(button instanceof HTMLElement)) return;
+        const idleLabel = button.dataset.idleLabel;
+        const busyLabel = button.dataset.busyLabel;
+        if (busy) {
+          button.setAttribute("disabled", "disabled");
+          if (idleLabel && busyLabel) {
+            button.textContent = busyLabel;
+          }
+        } else {
+          button.removeAttribute("disabled");
+          if (idleLabel) {
+            button.textContent = idleLabel;
+          }
+        }
+      };
+
+      const renderProgress = (elements, percent) => {
+        const safePercent = Math.max(0, Math.min(100, Math.round(percent)));
+        if (elements.percentText) {
+          elements.percentText.textContent = `${safePercent}%`;
+        }
+        if (elements.meter) {
+          elements.meter.style.width = `${safePercent}%`;
+        }
+      };
+
+      const beginProgress = (form) => {
+        const elements = getProgressElements(form);
+        if (!elements) return;
+        const existing = controllers.get(form);
+        if (existing && existing.timer) {
+          window.clearInterval(existing.timer);
+        }
+
+        elements.panel.hidden = false;
+        form.classList.add("is-busy");
+        elements.buttons.forEach((button) => setButtonState(button, true));
+        renderProgress(elements, 8);
+
+        const state = { percent: 8, timer: null };
+        state.timer = window.setInterval(() => {
+          state.percent = state.percent < 60 ? state.percent + 8 : state.percent + 3;
+          renderProgress(elements, Math.min(state.percent, 92));
+        }, 220);
+        controllers.set(form, state);
+      };
+
+      const finishProgress = (form) => {
+        const elements = getProgressElements(form);
+        if (!elements) return;
+        const state = controllers.get(form);
+        if (state && state.timer) {
+          window.clearInterval(state.timer);
+        }
+        renderProgress(elements, 100);
+        window.setTimeout(() => {
+          elements.panel.hidden = true;
+          form.classList.remove("is-busy");
+          elements.buttons.forEach((button) => setButtonState(button, false));
+        }, 260);
+        controllers.delete(form);
+      };
+
+      const bindForms = (root = document) => {
+        const forms = Array.from(root.querySelectorAll("[data-progress-form]"));
+        forms.forEach((form) => {
+          if (!(form instanceof HTMLFormElement) || form.dataset.progressBound === "true") return;
+          form.dataset.progressBound = "true";
+          form.addEventListener("submit", () => beginProgress(form));
+        });
+      };
+
+      const formFromEvent = (event) => {
+        const elt = event?.detail?.elt;
+        if (elt && typeof elt.closest === "function") {
+          return elt.closest("[data-progress-form]");
+        }
+        return null;
+      };
+
+      document.addEventListener("DOMContentLoaded", () => bindForms(document));
+      document.addEventListener("crosstab:fallback-complete", (event) => {
+        const form = event.detail && event.detail.form;
+        if (form) finishProgress(form);
+        bindForms(document);
+      });
+      document.addEventListener("crosstab:fallback-error", (event) => {
+        const form = event.detail && event.detail.form;
+        if (form) finishProgress(form);
+      });
+      document.body.addEventListener("htmx:afterRequest", (event) => {
+        const form = formFromEvent(event);
+        if (form) finishProgress(form);
+      });
+      document.body.addEventListener("htmx:responseError", (event) => {
+        const form = formFromEvent(event);
+        if (form) finishProgress(form);
+      });
+      document.body.addEventListener("htmx:afterSwap", (event) => {
+        if (event.detail && event.detail.elt) {
+          document.dispatchEvent(new CustomEvent("crosstab:activate-inline-scripts", { detail: { root: event.detail.elt } }));
+        }
+        bindForms(document);
+      });
     })();
   </script>
 </head>
@@ -80,5 +224,6 @@
   <main class="container app-shell">
     {% block content %}{% endblock %}
   </main>
+  {% block scripts %}{% endblock %}
 </body>
 </html>
