@@ -1286,6 +1286,12 @@ def _render_result_panel(request: Request, job: Dict[str, Any]) -> HTMLResponse:
     )
 
 
+def _is_partial_request(request: Request) -> bool:
+    hx_request = str(request.headers.get("HX-Request", "")).strip().lower()
+    requested_with = str(request.headers.get("X-Requested-With", "")).strip().lower()
+    return hx_request == "true" or requested_with == "xmlhttprequest"
+
+
 def _render_error_panel(message: str) -> HTMLResponse:
     safe = str(message).strip() or "Something went wrong while building the crosstab."
     html = (
@@ -1648,9 +1654,14 @@ async def upload(
         "saved_modal_open": False,
     }
 
+    if _is_partial_request(request):
+        return templates.TemplateResponse(
+            "_dataset_panel.html",
+            {"request": request, "title": APP_TITLE, "job": JOBS[job_id]},
+        )
     return templates.TemplateResponse(
-        "_dataset_panel.html",
-        {"request": request, "title": APP_TITLE, "job": JOBS[job_id]},
+        "index.html",
+        {"request": request, "title": APP_TITLE, "job": JOBS[job_id], "result": None},
     )
 
 @app.post("/run", response_class=HTMLResponse)

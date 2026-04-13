@@ -41,6 +41,8 @@
   </div>
 
   <form class="upload upload-grid"
+        method="post"
+        action="/upload"
         hx-post="/upload"
         hx-target="#dataset_area"
         hx-swap="innerHTML"
@@ -63,7 +65,15 @@
   </form>
 </section>
 
-<div id="dataset_area"></div>
-<div id="result_area"></div>
+<div id="dataset_area">
+  {% if job %}
+    {% include "_dataset_panel.html" %}
+  {% endif %}
+</div>
+<div id="result_area">
+  {% if result %}
+    {% include "_result_panel.html" %}
+  {% endif %}
+</div>
 
 {% endblock %}
