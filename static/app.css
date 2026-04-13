@@ -111,7 +111,7 @@ body{
 }
 .upload-grid{
   display:grid;
-  grid-template-columns:1fr 1fr auto;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(220px, 260px);
   gap:14px;
   align-items:stretch;
 }
@@ -147,13 +147,14 @@ body{
 .upload-actions{
   display:flex;
   flex-direction:column;
-  align-items:flex-end;
-  justify-content:flex-end;
+  align-items:stretch;
+  justify-content:center;
   gap:8px;
+  min-width:0;
 }
 .upload-selection-summary{
-  max-width:220px;
-  text-align:right;
+  max-width:none;
+  text-align:left;
 }
 .progress-card{
   margin-top:14px;
