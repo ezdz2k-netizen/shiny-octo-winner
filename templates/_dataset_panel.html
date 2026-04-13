@@ -21,7 +21,8 @@
   <form class="workspace-form"
         hx-post="/run"
         hx-target="#result_area"
-        hx-swap="innerHTML">
+        hx-swap="innerHTML"
+        data-progress-form="run">
     <input type="hidden" name="job_id" value="{{ job.id }}" />
 
     <section class="setup-card">
@@ -189,10 +190,17 @@
       </div>
       <div class="run-actions">
         <button class="btn btn-wide" type="submit" name="transpose_table" value="1" data-mr-only data-display="inline-flex" hidden>Transpose Output Table</button>
-        <button class="btn primary btn-wide" type="submit">Run Crosstab</button>
+        <button class="btn primary btn-wide" type="submit" data-idle-label="Run Crosstab" data-busy-label="Building Preview...">Run Crosstab</button>
       </div>
     </div>
   </form>
+  <div class="progress-card" data-progress-panel="run" hidden>
+    <div class="progress-copy">
+      <strong>Building preview...</strong>
+      <p class="muted">Running the crosstab and refreshing the preview tables.</p>
+    </div>
+    <div class="progress-bar"><span class="progress-bar-fill progress-bar-indeterminate"></span></div>
+  </div>
 </div>
 
 <script>
@@ -459,5 +467,40 @@
     field.addEventListener("change", savePrefs);
   });
   form.addEventListener("submit", savePrefs);
+})();
+</script>
+
+<script>
+(() => {
+  const forms = Array.from(document.querySelectorAll("[data-progress-form]"));
+  forms.forEach((form) => {
+    const key = form.getAttribute("data-progress-form");
+    if (!key) return;
+    const panel = document.querySelector(`[data-progress-panel="${key}"]`);
+    const submitButtons = Array.from(form.querySelectorAll('button[type="submit"], input[type="submit"]'));
+
+    const setBusyState = (busy) => {
+      if (panel) {
+        panel.hidden = !busy;
+      }
+      form.classList.toggle("is-busy", busy);
+      submitButtons.forEach((button) => {
+        if (!(button instanceof HTMLElement)) return;
+        const isPreviewButton = button.dataset.idleLabel === "Run Crosstab";
+        if (busy && isPreviewButton) {
+          button.setAttribute("disabled", "disabled");
+        } else if (!busy && isPreviewButton) {
+          button.removeAttribute("disabled");
+        }
+        if ("dataset" in button && button.dataset.busyLabel && button.dataset.idleLabel) {
+          button.textContent = busy && isPreviewButton ? button.dataset.busyLabel : button.dataset.idleLabel;
+        }
+      });
+    };
+
+    form.addEventListener("submit", () => {
+      setBusyState(true);
+    });
+  });
 })();
 </script>

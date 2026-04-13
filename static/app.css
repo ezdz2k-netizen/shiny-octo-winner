@@ -138,6 +138,46 @@ body{
   display:flex;
   align-items:flex-end;
 }
+.progress-card{
+  margin-top:14px;
+  border:1px solid var(--line);
+  border-radius:16px;
+  background:var(--card-soft);
+  padding:14px 16px;
+}
+.progress-copy{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  margin-bottom:10px;
+}
+.progress-copy strong{
+  font-size:14px;
+}
+.progress-bar{
+  width:100%;
+  height:10px;
+  border-radius:999px;
+  background:#e8ecf5;
+  overflow:hidden;
+}
+.progress-bar-fill{
+  display:block;
+  height:100%;
+  border-radius:999px;
+  background:linear-gradient(90deg, var(--primary), #63c7ff);
+}
+.progress-bar-indeterminate{
+  width:42%;
+  animation:progress-slide 1.1s ease-in-out infinite;
+}
+.is-busy{
+  opacity:.92;
+}
+@keyframes progress-slide{
+  0%{transform:translateX(-120%)}
+  100%{transform:translateX(260%)}
+}
 .btn{
   border:1px solid var(--primary);
   background:var(--primary);
