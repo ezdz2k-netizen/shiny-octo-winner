@@ -1304,6 +1304,15 @@ def _render_error_panel(message: str) -> HTMLResponse:
     return HTMLResponse(html)
 
 
+def _get_job_value_dataframe(job: Dict[str, Any]) -> "pd.DataFrame":
+    cached = job.get("value_df")
+    if cached is not None:
+        return cached
+    df = _read_excel_object_dataframe(job["value_path"])
+    job["value_df"] = df
+    return df
+
+
 def _preview_axis_label(label: Any, fallback: str) -> str:
     text = _normalize_label_text(label)
     if not text:
@@ -1644,6 +1653,7 @@ async def upload(
         "name": os.path.basename(text_path),
         "path": text_path,
         "value_path": value_path,
+        "value_df": None,
         "mapping_bundle": mapping_bundle,
         "columns": df.columns,
         "dich_cols": dich_cols,
@@ -1696,7 +1706,7 @@ def run(
         return _render_error_panel("This crosstab requires an uploaded text workbook paired with Value.xlsx.")
     if pd is None:
         return _render_error_panel("Pandas is required for ordered tabulation.")
-    df = _read_excel_object_dataframe(job["value_path"])
+    df = _get_job_value_dataframe(job)
 
     f_counts = out_counts is not None
     f_rowpct = out_rowpct is not None

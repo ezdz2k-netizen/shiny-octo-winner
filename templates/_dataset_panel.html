@@ -212,6 +212,7 @@
   const colVar1Help = form.querySelector("[data-col-var1-help]");
   const colVar2Help = form.querySelector("[data-col-var2-help]");
   const previewAutoRefreshFields = Array.from(form.querySelectorAll("[data-preview-autorefresh]"));
+  let previewRefreshTimer = null;
   const srOnlySections = Array.from(form.querySelectorAll("[data-sr-only]"));
   const mrOnlySections = Array.from(form.querySelectorAll("[data-mr-only]"));
   const columnSelects = Array.from(form.querySelectorAll("[data-column-select]"));
@@ -382,11 +383,17 @@
 
   const requestPreviewRefresh = () => {
     savePrefs();
-    if (typeof form.requestSubmit === "function") {
-      form.requestSubmit();
-      return;
+    if (previewRefreshTimer) {
+      window.clearTimeout(previewRefreshTimer);
     }
-    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    previewRefreshTimer = window.setTimeout(() => {
+      previewRefreshTimer = null;
+      if (typeof form.requestSubmit === "function") {
+        form.requestSubmit();
+        return;
+      }
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    }, 180);
   };
 
   const syncSelectTitle = (select) => {
