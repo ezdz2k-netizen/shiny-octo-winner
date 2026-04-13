@@ -22,7 +22,89 @@
         });
       };
 
-      if (window.htmx) return;
+      const injectResponse = (targetSelector, swapMode, html) => {
+        const target = document.querySelector(targetSelector);
+        if (!target) return;
+        if (swapMode === "outerHTML") {
+          target.outerHTML = html;
+        } else {
+          target.innerHTML = html;
+          activateInlineScripts(target);
+        }
+      };
+
+      const startEstimatedProgress = (form, start = 8) => {
+        document.dispatchEvent(new CustomEvent("crosstab:progress-start", { detail: { form, percent: start } }));
+        let percent = start;
+        const timer = window.setInterval(() => {
+          percent = percent < 60 ? percent + 8 : percent + 3;
+          document.dispatchEvent(new CustomEvent("crosstab:progress-update", { detail: { form, percent: Math.min(percent, 92) } }));
+        }, 220);
+        return () => window.clearInterval(timer);
+      };
+
+      const submitAjaxForm = (form) => {
+        const mode = form.getAttribute("data-ajax-submit");
+        const url = form.getAttribute("hx-post") || form.getAttribute("action");
+        const targetSelector = form.getAttribute("hx-target");
+        const swapMode = (form.getAttribute("hx-swap") || "innerHTML").trim();
+        if (!mode || !url || !targetSelector) return false;
+
+        if (mode === "upload") {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", url, true);
+          xhr.setRequestHeader("X-Requested-With", "XMLHttpRequest");
+          xhr.upload.onprogress = (event) => {
+            if (!event.lengthComputable) return;
+            const percent = Math.max(5, Math.min(95, Math.round((event.loaded / event.total) * 100)));
+            document.dispatchEvent(new CustomEvent("crosstab:progress-start", { detail: { form, percent } }));
+            document.dispatchEvent(new CustomEvent("crosstab:progress-update", { detail: { form, percent } }));
+          };
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              injectResponse(targetSelector, swapMode, xhr.responseText);
+              const resultArea = document.querySelector("#result_area");
+              if (resultArea) resultArea.innerHTML = "";
+              document.dispatchEvent(new CustomEvent("crosstab:fallback-complete", { detail: { form } }));
+            } else {
+              injectResponse(targetSelector, swapMode, `<div class="card"><p>${xhr.responseText || "Upload failed."}</p></div>`);
+              document.dispatchEvent(new CustomEvent("crosstab:fallback-error", { detail: { form, error: xhr.responseText || "Upload failed." } }));
+            }
+          };
+          xhr.onerror = () => {
+            document.dispatchEvent(new CustomEvent("crosstab:fallback-error", { detail: { form, error: "Upload failed." } }));
+          };
+          xhr.send(new FormData(form));
+          return true;
+        }
+
+        if (mode === "run") {
+          const stopProgress = startEstimatedProgress(form, 12);
+          fetch(url, {
+            method: "POST",
+            body: new FormData(form),
+            headers: { "X-Requested-With": "XMLHttpRequest" },
+          })
+            .then(async (response) => {
+              const html = await response.text();
+              if (!response.ok) {
+                throw new Error(html || `Request failed with status ${response.status}`);
+              }
+              injectResponse(targetSelector, swapMode, html);
+              document.dispatchEvent(new CustomEvent("crosstab:fallback-complete", { detail: { form } }));
+            })
+            .catch((error) => {
+              injectResponse(targetSelector, swapMode, `<div class="card"><p>${error instanceof Error ? error.message : "Request failed."}</p></div>`);
+              document.dispatchEvent(new CustomEvent("crosstab:fallback-error", { detail: { form, error: error instanceof Error ? error.message : "Request failed." } }));
+            })
+            .finally(() => {
+              stopProgress();
+            });
+          return true;
+        }
+
+        return false;
+      };
 
       const submitWithFallback = async (form) => {
         const url = form.getAttribute("hx-post");
@@ -36,9 +118,6 @@
           body.append(submitter.name, submitter.value);
         }
 
-        const target = document.querySelector(targetSelector);
-        if (!target) return;
-
         try {
           const response = await fetch(url, {
             method: "POST",
@@ -49,17 +128,11 @@
           if (!response.ok) {
             throw new Error(html || `Request failed with status ${response.status}`);
           }
-
-          if (swapMode === "outerHTML") {
-            target.outerHTML = html;
-          } else {
-            target.innerHTML = html;
-            activateInlineScripts(target);
-          }
+          injectResponse(targetSelector, swapMode, html);
           document.dispatchEvent(new CustomEvent("crosstab:fallback-complete", { detail: { form } }));
         } catch (error) {
           const message = error instanceof Error ? error.message : "Request failed.";
-          target.innerHTML = `<div class="card"><p>${message}</p></div>`;
+          injectResponse(targetSelector, swapMode, `<div class="card"><p>${message}</p></div>`);
           document.dispatchEvent(new CustomEvent("crosstab:fallback-error", { detail: { form, error: message } }));
         } finally {
           form.__fallbackSubmitter = null;
@@ -76,7 +149,12 @@
 
       document.addEventListener("submit", (event) => {
         const form = event.target;
-        if (!(form instanceof HTMLFormElement) || !form.matches("form[hx-post]")) return;
+        if (!(form instanceof HTMLFormElement)) return;
+        if (submitAjaxForm(form)) {
+          event.preventDefault();
+          return;
+        }
+        if (!form.matches("form[hx-post]")) return;
         event.preventDefault();
         submitWithFallback(form);
       });
@@ -172,6 +250,7 @@
         forms.forEach((form) => {
           if (!(form instanceof HTMLFormElement) || form.dataset.progressBound === "true") return;
           form.dataset.progressBound = "true";
+          if (form.dataset.ajaxSubmit) return;
           form.addEventListener("submit", () => beginProgress(form));
         });
       };
@@ -185,6 +264,21 @@
       };
 
       document.addEventListener("DOMContentLoaded", () => bindForms(document));
+      document.addEventListener("crosstab:progress-start", (event) => {
+        const form = event.detail && event.detail.form;
+        if (!form) return;
+        beginProgress(form);
+        const elements = getProgressElements(form);
+        if (!elements) return;
+        renderProgress(elements, Number(event.detail.percent || 0));
+      });
+      document.addEventListener("crosstab:progress-update", (event) => {
+        const form = event.detail && event.detail.form;
+        if (!form) return;
+        const elements = getProgressElements(form);
+        if (!elements) return;
+        renderProgress(elements, Number(event.detail.percent || 0));
+      });
       document.addEventListener("crosstab:fallback-complete", (event) => {
         const form = event.detail && event.detail.form;
         if (form) finishProgress(form);

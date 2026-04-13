@@ -19,10 +19,13 @@
   </div>
 
   <form class="workspace-form"
+        method="post"
+        action="/run"
         hx-post="/run"
         hx-target="#result_area"
         hx-swap="innerHTML"
-        data-progress-form="run">
+        data-progress-form="run"
+        data-ajax-submit="run">
     <input type="hidden" name="job_id" value="{{ job.id }}" />
 
     <section class="setup-card">
@@ -117,7 +120,7 @@
           <div class="field">
             <label>Column variable (Layer 1)</label>
             <select name="col_var" required title="" data-column-select="primary">
-              <option value="(none)">(none)</option>
+              <option value="(none)" selected>(none)</option>
               {% for c in job.columns %}
                 <option value="{{ c }}" title="{{ c }}">{{ short_label(c) }}</option>
               {% endfor %}
@@ -196,10 +199,13 @@
   </form>
   <div class="progress-card" data-progress-panel="run" hidden>
     <div class="progress-copy">
-      <strong>Building preview...</strong>
+      <div class="progress-copy-top">
+        <strong>Building preview...</strong>
+        <span class="progress-percent" data-progress-percent>0%</span>
+      </div>
       <p class="muted">Running the crosstab and refreshing the preview tables.</p>
     </div>
-    <div class="progress-bar"><span class="progress-bar-fill progress-bar-indeterminate"></span></div>
+    <div class="progress-bar"><span class="progress-bar-fill" data-progress-meter style="width:0%"></span></div>
   </div>
 </div>
 
@@ -327,12 +333,6 @@
     });
     if (colSelect) {
       colSelect.required = !compareEnabled;
-      if (!compareEnabled && colSelect.value === "(none)") {
-        const fallbackValue = firstRealOptionValue(colSelect);
-        if (fallbackValue) {
-          colSelect.value = fallbackValue;
-        }
-      }
       syncSelectTitle(colSelect);
     }
     if (colSelect2) {
@@ -416,6 +416,10 @@
   };
 
   applyPrefs({ ...defaultPrefs, ...(readPrefs() || {}) });
+  if (colSelect) {
+    colSelect.value = "(none)";
+    syncSelectTitle(colSelect);
+  }
   syncQuestionTypeLayout();
 
   if (swapBtn && rowSelect && colSelect) {
@@ -431,6 +435,9 @@
   form.querySelectorAll("select").forEach((select) => {
     syncSelectTitle(select);
     select.addEventListener("change", () => {
+      if (select === colSelect) {
+        select.dataset.userChosen = "true";
+      }
       syncSelectTitle(select);
       if (select === rowSelect) {
         syncConceptControls();
@@ -447,18 +454,6 @@
     field.addEventListener("change", requestPreviewRefresh);
   });
 
-  form.addEventListener("submit", () => {
-    const isMR = qtypeSelect && qtypeSelect.value === "mr";
-    const compareEnabled = Boolean(conceptToggle && conceptToggle.checked && !conceptToggle.disabled);
-    if (colSelect && colSelect.value === "(none)" && (isMR || !compareEnabled)) {
-      const fallbackValue = firstRealOptionValue(colSelect);
-      if (fallbackValue) {
-        colSelect.value = fallbackValue;
-        syncSelectTitle(colSelect);
-      }
-    }
-  });
-
   syncConceptControls();
 
   prefNames.forEach((name) => {
@@ -467,40 +462,5 @@
     field.addEventListener("change", savePrefs);
   });
   form.addEventListener("submit", savePrefs);
-})();
-</script>
-
-<script>
-(() => {
-  const forms = Array.from(document.querySelectorAll("[data-progress-form]"));
-  forms.forEach((form) => {
-    const key = form.getAttribute("data-progress-form");
-    if (!key) return;
-    const panel = document.querySelector(`[data-progress-panel="${key}"]`);
-    const submitButtons = Array.from(form.querySelectorAll('button[type="submit"], input[type="submit"]'));
-
-    const setBusyState = (busy) => {
-      if (panel) {
-        panel.hidden = !busy;
-      }
-      form.classList.toggle("is-busy", busy);
-      submitButtons.forEach((button) => {
-        if (!(button instanceof HTMLElement)) return;
-        const isPreviewButton = button.dataset.idleLabel === "Run Crosstab";
-        if (busy && isPreviewButton) {
-          button.setAttribute("disabled", "disabled");
-        } else if (!busy && isPreviewButton) {
-          button.removeAttribute("disabled");
-        }
-        if ("dataset" in button && button.dataset.busyLabel && button.dataset.idleLabel) {
-          button.textContent = busy && isPreviewButton ? button.dataset.busyLabel : button.dataset.idleLabel;
-        }
-      });
-    };
-
-    form.addEventListener("submit", () => {
-      setBusyState(true);
-    });
-  });
 })();
 </script>

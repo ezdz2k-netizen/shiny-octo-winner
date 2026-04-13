@@ -44,6 +44,7 @@
         method="post"
         action="/upload"
         data-progress-form="upload"
+        data-ajax-submit="upload"
         enctype="multipart/form-data">
     <label class="file-card">
       <span class="file-card-title">Workbook A</span>
@@ -63,10 +64,13 @@
   </form>
   <div class="progress-card" data-progress-panel="upload" hidden>
     <div class="progress-copy">
-      <strong>Uploading files...</strong>
+      <div class="progress-copy-top">
+        <strong>Uploading files...</strong>
+        <span class="progress-percent" data-progress-percent>0%</span>
+      </div>
       <p class="muted">Reading the workbooks and preparing the dataset.</p>
     </div>
-    <div class="progress-bar"><span class="progress-bar-fill progress-bar-indeterminate"></span></div>
+    <div class="progress-bar"><span class="progress-bar-fill" data-progress-meter style="width:0%"></span></div>
   </div>
 </section>
 
@@ -81,40 +85,4 @@
   {% endif %}
 </div>
 
-{% endblock %}
-
-{% block scripts %}
-<script>
-(() => {
-  const forms = Array.from(document.querySelectorAll("[data-progress-form]"));
-  forms.forEach((form) => {
-    const key = form.getAttribute("data-progress-form");
-    if (!key) return;
-    const panel = document.querySelector(`[data-progress-panel="${key}"]`);
-    const submitButtons = Array.from(form.querySelectorAll('button[type="submit"], input[type="submit"]'));
-
-    const setBusyState = (busy) => {
-      if (panel) {
-        panel.hidden = !busy;
-      }
-      form.classList.toggle("is-busy", busy);
-      submitButtons.forEach((button) => {
-        if (!(button instanceof HTMLElement)) return;
-        if (busy) {
-          button.setAttribute("disabled", "disabled");
-        } else {
-          button.removeAttribute("disabled");
-        }
-        if ("dataset" in button && button.dataset.busyLabel && button.dataset.idleLabel) {
-          button.textContent = busy ? button.dataset.busyLabel : button.dataset.idleLabel;
-        }
-      });
-    };
-
-    form.addEventListener("submit", () => {
-      setBusyState(true);
-    });
-  });
-})();
-</script>
 {% endblock %}
