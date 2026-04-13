@@ -33,12 +33,12 @@
         }
       };
 
-      const startEstimatedProgress = (form, start = 8) => {
-        document.dispatchEvent(new CustomEvent("crosstab:progress-start", { detail: { form, percent: start } }));
+      const startEstimatedProgress = (form, start = 0, detail = {}) => {
+        document.dispatchEvent(new CustomEvent("crosstab:progress-start", { detail: { form, percent: start, ...detail } }));
         let percent = start;
         const timer = window.setInterval(() => {
           percent = percent < 60 ? percent + 8 : percent + 3;
-          document.dispatchEvent(new CustomEvent("crosstab:progress-update", { detail: { form, percent: Math.min(percent, 92) } }));
+          document.dispatchEvent(new CustomEvent("crosstab:progress-update", { detail: { form, percent: Math.min(percent, 92), ...detail } }));
         }, 220);
         return () => window.clearInterval(timer);
       };
@@ -52,15 +52,59 @@
 
         if (mode === "upload") {
           const xhr = new XMLHttpRequest();
+          let stopProcessingProgress = null;
           xhr.open("POST", url, true);
           xhr.setRequestHeader("X-Requested-With", "XMLHttpRequest");
+          xhr.onloadstart = () => {
+            document.dispatchEvent(new CustomEvent("crosstab:progress-start", {
+              detail: {
+                form,
+                percent: 0,
+                estimate: false,
+                title: "Uploading files...",
+                message: "Sending both workbooks to the server."
+              }
+            }));
+          };
           xhr.upload.onprogress = (event) => {
             if (!event.lengthComputable) return;
-            const percent = Math.max(5, Math.min(95, Math.round((event.loaded / event.total) * 100)));
-            document.dispatchEvent(new CustomEvent("crosstab:progress-start", { detail: { form, percent } }));
-            document.dispatchEvent(new CustomEvent("crosstab:progress-update", { detail: { form, percent } }));
+            const percent = Math.max(0, Math.min(80, Math.round((event.loaded / event.total) * 80)));
+            document.dispatchEvent(new CustomEvent("crosstab:progress-start", {
+              detail: {
+                form,
+                percent,
+                estimate: false,
+                title: "Uploading files...",
+                message: "Uploading workbook data to the server."
+              }
+            }));
+            document.dispatchEvent(new CustomEvent("crosstab:progress-update", {
+              detail: {
+                form,
+                percent,
+                title: "Uploading files...",
+                message: "Uploading workbook data to the server."
+              }
+            }));
+          };
+          xhr.upload.onloadend = () => {
+            document.dispatchEvent(new CustomEvent("crosstab:progress-update", {
+              detail: {
+                form,
+                percent: 80,
+                title: "Processing workbooks...",
+                message: "Upload complete. Reading Excel files and preparing the dataset."
+              }
+            }));
+            stopProcessingProgress = startEstimatedProgress(form, 80, {
+              title: "Processing workbooks...",
+              message: "Upload complete. Reading Excel files and preparing the dataset."
+            });
           };
           xhr.onload = () => {
+            if (typeof stopProcessingProgress === "function") {
+              stopProcessingProgress();
+            }
             if (xhr.status >= 200 && xhr.status < 300) {
               injectResponse(targetSelector, swapMode, xhr.responseText);
               const resultArea = document.querySelector("#result_area");
@@ -72,6 +116,9 @@
             }
           };
           xhr.onerror = () => {
+            if (typeof stopProcessingProgress === "function") {
+              stopProcessingProgress();
+            }
             document.dispatchEvent(new CustomEvent("crosstab:fallback-error", { detail: { form, error: "Upload failed." } }));
           };
           xhr.send(new FormData(form));
@@ -79,7 +126,10 @@
         }
 
         if (mode === "run") {
-          const stopProgress = startEstimatedProgress(form, 12);
+          const stopProgress = startEstimatedProgress(form, 12, {
+            title: "Building preview...",
+            message: "Running the crosstab and refreshing the preview tables."
+          });
           fetch(url, {
             method: "POST",
             body: new FormData(form),
@@ -175,6 +225,8 @@
         if (!panel) return null;
         return {
           panel,
+          title: panel.querySelector("[data-progress-title]"),
+          detail: panel.querySelector("[data-progress-detail]"),
           percentText: panel.querySelector("[data-progress-percent]"),
           meter: panel.querySelector("[data-progress-meter]"),
           buttons: Array.from(form.querySelectorAll('button[type="submit"], input[type="submit"]')),
@@ -208,7 +260,16 @@
         }
       };
 
-      const beginProgress = (form) => {
+      const renderProgressCopy = (elements, title, message) => {
+        if (elements.title && title) {
+          elements.title.textContent = title;
+        }
+        if (elements.detail && message) {
+          elements.detail.textContent = message;
+        }
+      };
+
+      const beginProgress = (form, options = {}) => {
         const elements = getProgressElements(form);
         if (!elements) return;
         const existing = controllers.get(form);
@@ -219,13 +280,16 @@
         elements.panel.hidden = false;
         form.classList.add("is-busy");
         elements.buttons.forEach((button) => setButtonState(button, true));
-        renderProgress(elements, 8);
+        renderProgressCopy(elements, options.title, options.message);
+        renderProgress(elements, Number(options.percent ?? 0));
 
-        const state = { percent: 8, timer: null };
-        state.timer = window.setInterval(() => {
-          state.percent = state.percent < 60 ? state.percent + 8 : state.percent + 3;
-          renderProgress(elements, Math.min(state.percent, 92));
-        }, 220);
+        const state = { percent: Number(options.percent ?? 0), timer: null };
+        if (options.estimate !== false) {
+          state.timer = window.setInterval(() => {
+            state.percent = state.percent < 60 ? state.percent + 8 : state.percent + 3;
+            renderProgress(elements, Math.min(state.percent, 92));
+          }, 220);
+        }
         controllers.set(form, state);
       };
 
@@ -267,9 +331,10 @@
       document.addEventListener("crosstab:progress-start", (event) => {
         const form = event.detail && event.detail.form;
         if (!form) return;
-        beginProgress(form);
+        beginProgress(form, event.detail || {});
         const elements = getProgressElements(form);
         if (!elements) return;
+        renderProgressCopy(elements, event.detail && event.detail.title, event.detail && event.detail.message);
         renderProgress(elements, Number(event.detail.percent || 0));
       });
       document.addEventListener("crosstab:progress-update", (event) => {
@@ -277,6 +342,7 @@
         if (!form) return;
         const elements = getProgressElements(form);
         if (!elements) return;
+        renderProgressCopy(elements, event.detail && event.detail.title, event.detail && event.detail.message);
         renderProgress(elements, Number(event.detail.percent || 0));
       });
       document.addEventListener("crosstab:fallback-complete", (event) => {
