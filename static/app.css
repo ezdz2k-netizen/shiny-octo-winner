@@ -134,9 +134,26 @@ body{
   font-size:12px;
 }
 .file-card input[type=file]{width:100%}
+.file-card-status{
+  min-height:18px;
+  color:var(--muted);
+  font-size:12px;
+  font-weight:700;
+  word-break:break-word;
+}
+.file-card-status.is-selected{
+  color:#0f766e;
+}
 .upload-actions{
   display:flex;
+  flex-direction:column;
   align-items:flex-end;
+  justify-content:flex-end;
+  gap:8px;
+}
+.upload-selection-summary{
+  max-width:220px;
+  text-align:right;
 }
 .progress-card{
   margin-top:14px;
@@ -673,6 +690,10 @@ select{
   }
   .variable-layout .field:last-child{grid-column:auto}
   .upload-actions{align-items:stretch}
+  .upload-selection-summary{
+    max-width:none;
+    text-align:left;
+  }
   .run-bar,
   .section-head{
     flex-direction:column;

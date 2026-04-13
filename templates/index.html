@@ -4,29 +4,29 @@
 <section class="hero card">
   <div class="hero-copy">
     <div class="eyebrow">Simple Workflow</div>
-    <h1>Upload, choose variables, and run your crosstab.</h1>
-    <p class="muted hero-text">Upload the Value and Labels export from Toluna Analytics. The app will auto-detect which is which.</p>
+    <h1>Upload both workbooks, set the table type, and run your crosstab.</h1>
+    <p class="muted hero-text">Upload <b>both Excel Value and Excel Labels</b> exports from Toluna Analytics. The app auto-detects which file is which, supports MR tables from detected dichotomy groups, and can compare concept-style questions across C1, C2, C3, and so on.</p>
   </div>
   <div class="hero-steps">
     <div class="mini-step">
       <span>1</span>
       <div>
         <strong>Upload files</strong>
-        <p class="muted">Select the two Toluna workbooks in either order.</p>
+        <p class="muted">Select both Toluna Excel exports in either order: Value and Labels.</p>
       </div>
     </div>
     <div class="mini-step">
       <span>2</span>
       <div>
-        <strong>Set up tables</strong>
-        <p class="muted">Choose row, column, and output settings.</p>
+        <strong>Choose table type</strong>
+        <p class="muted">Use Single Response for normal banners or Concept comparison, or switch to MR and pick the dichotomy options for one multiple-response question.</p>
       </div>
     </div>
     <div class="mini-step">
       <span>3</span>
       <div>
         <strong>Preview and export</strong>
-        <p class="muted">Review the result, save outputs, and export.</p>
+        <p class="muted">Review the preview, save table outputs, and export the final workbook when the layout looks right.</p>
       </div>
     </div>
   </div>
@@ -49,26 +49,29 @@
     <label class="file-card">
       <span class="file-card-title">Workbook A</span>
       <span class="file-card-help">Choose either the Value or Labels export.</span>
-      <input type="file" name="file" accept=".xlsx" required />
+      <input type="file" name="file" accept=".xlsx" required data-upload-file-input="a" />
+      <span class="file-card-status" data-upload-file-status="a">No file selected yet.</span>
     </label>
 
     <label class="file-card">
       <span class="file-card-title">Workbook B</span>
       <span class="file-card-help">Choose the remaining Toluna export.</span>
-      <input type="file" name="value_file" accept=".xlsx" required />
+      <input type="file" name="value_file" accept=".xlsx" required data-upload-file-input="b" />
+      <span class="file-card-status" data-upload-file-status="b">No file selected yet.</span>
     </label>
 
     <div class="upload-actions">
       <button class="btn primary btn-wide" type="submit" data-idle-label="Upload Files" data-busy-label="Uploading Files...">Upload Files</button>
+      <p class="upload-selection-summary muted" data-upload-selection-summary>Select both workbooks to enable a smoother upload check.</p>
     </div>
   </form>
   <div class="progress-card" data-progress-panel="upload" hidden>
     <div class="progress-copy">
       <div class="progress-copy-top">
-        <strong>Uploading files...</strong>
+        <strong data-progress-title>Uploading files...</strong>
         <span class="progress-percent" data-progress-percent>0%</span>
       </div>
-      <p class="muted">Reading the workbooks and preparing the dataset.</p>
+      <p class="muted" data-progress-detail>Reading the workbooks and preparing the dataset.</p>
     </div>
     <div class="progress-bar"><span class="progress-bar-fill" data-progress-meter style="width:0%"></span></div>
   </div>
@@ -85,4 +88,59 @@
   {% endif %}
 </div>
 
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    (() => {
+      const bindUploadStatus = (root = document) => {
+        const form = root.querySelector('form[data-progress-form="upload"]');
+        if (!(form instanceof HTMLFormElement) || form.dataset.fileStatusBound === "true") return;
+        form.dataset.fileStatusBound = "true";
+
+        const inputs = Array.from(form.querySelectorAll("[data-upload-file-input]"));
+        const summary = form.querySelector("[data-upload-selection-summary]");
+
+        const updateSummary = () => {
+          let selectedCount = 0;
+          inputs.forEach((input) => {
+            if (input instanceof HTMLInputElement && input.files && input.files.length > 0) {
+              selectedCount += 1;
+            }
+          });
+
+          if (!summary) return;
+          if (selectedCount === 0) {
+            summary.textContent = "Select both workbooks to enable a smoother upload check.";
+            return;
+          }
+          if (selectedCount === 1) {
+            summary.textContent = "1 of 2 workbooks ready. Choose the remaining file to continue.";
+            return;
+          }
+          summary.textContent = "2 of 2 workbooks ready. You can upload now.";
+        };
+
+        inputs.forEach((input) => {
+          if (!(input instanceof HTMLInputElement)) return;
+          const key = input.dataset.uploadFileInput;
+          const status = key ? form.querySelector(`[data-upload-file-status="${key}"]`) : null;
+
+          const updateInputStatus = () => {
+            if (!status) return;
+            const file = input.files && input.files.length > 0 ? input.files[0] : null;
+            status.textContent = file ? `Selected: ${file.name}` : "No file selected yet.";
+            status.classList.toggle("is-selected", Boolean(file));
+            updateSummary();
+          };
+
+          input.addEventListener("change", updateInputStatus);
+          updateInputStatus();
+        });
+      };
+
+      document.addEventListener("DOMContentLoaded", () => bindUploadStatus(document));
+      document.body.addEventListener("htmx:afterSwap", () => bindUploadStatus(document));
+    })();
+  </script>
 {% endblock %}
