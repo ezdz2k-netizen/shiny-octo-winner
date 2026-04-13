@@ -46,7 +46,7 @@
       const submitAjaxForm = (form) => {
         const mode = form.getAttribute("data-ajax-submit");
         const url = form.getAttribute("hx-post") || form.getAttribute("action");
-        const targetSelector = form.getAttribute("hx-target");
+        const targetSelector = form.getAttribute("hx-target") || (mode === "upload" ? "#dataset_area" : null);
         const swapMode = (form.getAttribute("hx-swap") || "innerHTML").trim();
         if (!mode || !url || !targetSelector) return false;
 

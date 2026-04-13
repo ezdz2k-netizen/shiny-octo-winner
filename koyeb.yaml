@@ -1,0 +1,26 @@
+name: crosstab-app
+services:
+  - name: web
+    source:
+      type: git
+      repository: https://github.com/yourusername/crosstab.git  # Replace with your GitHub repo
+      branch: main
+    build:
+      builder: dockerfile
+      dockerfile: Dockerfile
+    ports:
+      - port: 8000
+        protocol: http
+    env:
+      - key: PORT
+        value: "8000"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+    health_check:
+      http:
+        path: /
+        port: 8000
+    instance_type: nano
+    regions:
+      - was  # Washington DC
+      - fr   # Frankfurt
