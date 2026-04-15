@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import io
+import json
 import re
 import uuid
+import tempfile
 from copy import deepcopy
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -12,9 +14,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import polars as pl
 from fastapi import FastAPI, Form, Request, UploadFile, File, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+import jinja2
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
@@ -25,7 +28,14 @@ except Exception:
     pd = None  # type: ignore
 
 APP_TITLE = "Simple Crosstab Application"
-UPLOAD_DIR = os.environ.get("CROSSTAB_UPLOAD_DIR", "/tmp/crosstab_uploads")
+APP_VERSION = "v6.0"
+
+
+def _default_upload_dir() -> str:
+    return os.path.join(tempfile.gettempdir(), "crosstab_uploads")
+
+
+UPLOAD_DIR = os.environ.get("CROSSTAB_UPLOAD_DIR", _default_upload_dir())
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 app = FastAPI(title=APP_TITLE)
@@ -653,11 +663,11 @@ def _build_header_layout(columns: List[str]) -> Dict[str, Any]:
 def _build_box_row(
     label: str,
     categories: List[OrderedCategory],
-    count_lookup: Dict[Tuple[str, str], int],
+    count_lookup: Dict[Tuple[str, str], float],
     col_categories: List[OrderedCategory],
-    row_totals: Dict[str, int],
-    col_totals: Dict[str, int],
-    grand_total: int,
+    row_totals: Dict[str, float],
+    col_totals: Dict[str, float],
+    grand_total: float,
     kind: str,
     include_totals: bool,
 ) -> Dict[str, Any]:
@@ -680,6 +690,168 @@ def _build_box_row(
         else:
             row["Total"] = (combined_row_total / grand_total * 100.0) if grand_total > 0 else 0.0
     return row
+
+
+def _build_custom_group_row(
+    label: str,
+    selected_codes: List[str],
+    row_categories: List[OrderedCategory],
+    count_lookup: Dict[Tuple[str, str], float],
+    col_categories: List[OrderedCategory],
+    row_totals: Dict[str, float],
+    col_totals: Dict[str, float],
+    grand_total: float,
+    kind: str,
+    include_totals: bool,
+) -> Optional[Dict[str, Any]]:
+    normalized_label = str(label).strip()
+    wanted_codes = {str(code).strip() for code in selected_codes if str(code).strip()}
+    if not normalized_label or not wanted_codes:
+        return None
+    categories = [category for category in row_categories if category.raw_code in wanted_codes]
+    if not categories:
+        return None
+    return _build_box_row(
+        label=normalized_label,
+        categories=categories,
+        count_lookup=count_lookup,
+        col_categories=col_categories,
+        row_totals=row_totals,
+        col_totals=col_totals,
+        grand_total=grand_total,
+        kind=kind,
+        include_totals=include_totals,
+    )
+
+
+def _build_custom_group_row_from_counts(
+    label: str,
+    group_counts: Dict[str, float],
+    col_categories: List[OrderedCategory],
+    col_denominators: Dict[str, float],
+    grand_total: float,
+    kind: str,
+    include_totals: bool,
+) -> Optional[Dict[str, Any]]:
+    normalized_label = str(label).strip()
+    if not normalized_label:
+        return None
+    row: Dict[str, Any] = {"__label__": normalized_label, "__is_box__": True}
+    row_total = sum(float(group_counts.get(str(col.raw_code), 0)) for col in col_categories)
+    for col_cat in col_categories:
+        count = float(group_counts.get(str(col_cat.raw_code), 0))
+        if kind == "counts":
+            row[col_cat.label] = count
+        elif kind == "rowpct":
+            row[col_cat.label] = (count / row_total * 100.0) if row_total > 0 else 0.0
+        else:
+            denominator = float(col_denominators.get(str(col_cat.raw_code), 0))
+            row[col_cat.label] = (count / denominator * 100.0) if denominator > 0 else 0.0
+    if include_totals:
+        if kind == "counts":
+            row["Total"] = row_total
+        elif kind == "rowpct":
+            row["Total"] = 100.0 if row_total > 0 else 0.0
+        else:
+            row["Total"] = (row_total / grand_total * 100.0) if grand_total > 0 else 0.0
+    return row
+
+
+def _parse_custom_group_definitions(
+    definitions_text: str,
+    single_label: str = "",
+    single_codes: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    groups: List[Dict[str, Any]] = []
+    lines = [str(line).strip() for line in str(definitions_text or "").splitlines()]
+    for line in lines:
+        if not line:
+            continue
+        if "=" not in line:
+            raise RuntimeError(
+                "Custom groups must use the format 'Label = code1, code2'."
+            )
+        label, codes_text = line.split("=", 1)
+        parsed_codes = [code.strip() for code in re.split(r"[,|]", codes_text) if code.strip()]
+        if not label.strip() or not parsed_codes:
+            raise RuntimeError(
+                "Custom groups must use the format 'Label = code1, code2'."
+            )
+        groups.append({"label": label.strip(), "codes": parsed_codes})
+
+    fallback_codes = [str(code).strip() for code in list(single_codes or []) if str(code).strip()]
+    if str(single_label).strip() and fallback_codes:
+        groups.append({"label": str(single_label).strip(), "codes": fallback_codes})
+    return groups
+
+
+def _groupable_question_options(bundle: MappingBundle) -> Dict[str, List[Dict[str, Any]]]:
+    return {
+        question: [
+            {"code": category.raw_code, "label": category.label, "order": category.order}
+            for category in mapping.categories
+        ]
+        for question, mapping in bundle.questions.items()
+    }
+
+
+def _short_column_label(column_name: str) -> str:
+    value = str(column_name or "").strip()
+    match = re.match(r"^\s*\d+\s*:\s*(.+)$", value)
+    if match:
+        return match.group(1).strip()
+    return value
+
+
+def _column_display_labels(columns: List[str]) -> Dict[str, str]:
+    labels: Dict[str, str] = {}
+    used: Dict[str, int] = {}
+    for column in columns:
+        base_label = _short_column_label(column) or str(column)
+        count = used.get(base_label, 0)
+        used[base_label] = count + 1
+        labels[str(column)] = base_label if count == 0 else f"{base_label} ({count + 1})"
+    return labels
+
+
+def _build_filter_value_options(
+    df: "pd.DataFrame",
+    bundle: Optional["MappingBundle"],
+) -> Dict[str, List[Dict[str, str]]]:
+    options_by_column: Dict[str, List[Dict[str, str]]] = {}
+    bundle_questions = getattr(bundle, "questions", {}) if bundle is not None else {}
+    for column in [str(col) for col in df.columns]:
+        if column in bundle_questions:
+            try:
+                mapping = bundle_questions[column]
+                options_by_column[column] = [
+                    {
+                        "value": str(category.raw_code),
+                        "label": f"{category.raw_code} - {category.label}",
+                    }
+                    for category in mapping.categories
+                ]
+                continue
+            except Exception:
+                pass
+
+        try:
+            if pd is not None:
+                unique_values = df[column].dropna().unique()
+                options_by_column[column] = [
+                    {"value": str(val), "label": str(val)}
+                    for val in unique_values[:50]
+                    if val is not None
+                ]
+            else:
+                unique_values = df[column].drop_nulls().unique()
+                options_by_column[column] = [
+                    {"value": str(val), "label": str(val)}
+                    for val in unique_values[:50]
+                ]
+        except Exception:
+            options_by_column[column] = []
+    return options_by_column
 
 
 def _validate_mapping_frames(text_df: "pd.DataFrame", value_df: "pd.DataFrame") -> None:
@@ -893,6 +1065,34 @@ def _mapped_series(
     return frame, categories
 
 
+def _mapped_codes_for_question(
+    df: "pd.DataFrame",
+    bundle: MappingBundle,
+    question: str,
+) -> Tuple[List[Optional[str]], QuestionMapping]:
+    mapping = _question_mapping_or_error(bundle, question)
+    codes = [_normalize_response_value(v) for v in df[question].tolist()]
+    _validate_question_codes(question, mapping, codes)
+    return codes, mapping
+
+
+def _composite_codes_for_questions(
+    df: "pd.DataFrame",
+    bundle: MappingBundle,
+    question1: str,
+    question2: str,
+) -> List[Optional[str]]:
+    codes1, _ = _mapped_codes_for_question(df, bundle, question1)
+    codes2, _ = _mapped_codes_for_question(df, bundle, question2)
+    composite_codes: List[Optional[str]] = []
+    for code1, code2 in zip(codes1, codes2):
+        if code1 is None or code2 is None:
+            composite_codes.append(None)
+        else:
+            composite_codes.append(f"{code1} | {code2}")
+    return composite_codes
+
+
 def _mapped_composite_series(
     df: "pd.DataFrame",
     bundle: MappingBundle,
@@ -938,13 +1138,38 @@ def _mapped_composite_series(
     return frame, categories
 
 
+def _resolve_weight_values(
+    df: "pd.DataFrame",
+    weight_col: Optional[str],
+) -> Tuple[List[float], Optional[str]]:
+    if not weight_col or weight_col == "(none)":
+        return [1.0] * len(df.index), None
+    if weight_col not in df.columns:
+        raise RuntimeError("Selected weight column not found in dataset.")
+    raw_series = df[weight_col]
+    numeric_series = pd.to_numeric(raw_series, errors="coerce")
+    invalid_mask = raw_series.notna() & numeric_series.isna()
+    if bool(invalid_mask.any()):
+        raise RuntimeError(f"Weight column '{weight_col}' contains non-numeric values.")
+    numeric_series = numeric_series.fillna(0.0)
+    if bool((numeric_series < 0).any()):
+        raise RuntimeError(f"Weight column '{weight_col}' contains negative values.")
+    return [float(value) for value in numeric_series.tolist()], weight_col
+
+
 def _prepare_column_dimension(
     df: "pd.DataFrame",
     bundle: MappingBundle,
     col_var: str,
     col_var2: Optional[str],
     include_all_categories: bool,
+    total_length_override: Optional[int] = None,
 ) -> Tuple["pd.DataFrame", List[OrderedCategory], str]:
+    if not col_var or col_var == "(none)":
+        length = int(total_length_override) if total_length_override is not None else len(df.index)
+        rows = [{"code": "__total__", "label": "Total", "order": 0} for _ in range(max(length, 0))]
+        frame = pd.DataFrame(rows, columns=["code", "label", "order"])  # type: ignore[union-attr]
+        return frame, [OrderedCategory(raw_code="__total__", label="Total", order=0)], "Total"
     if not col_var2 or col_var2 == "(none)":
         frame, categories = _mapped_series(df, bundle, col_var, include_all_categories=include_all_categories)
         return frame, _apply_column_ordering(bundle, categories), col_var
@@ -1008,8 +1233,14 @@ def tabulate_sr_concept_comparison(
     row_sort_mode: str = "code_asc",
     include_top2_box: bool = False,
     include_bottom2_box: bool = False,
+    custom_group_label: str = "",
+    custom_group_codes: Optional[List[str]] = None,
+    custom_groups: Optional[List[Dict[str, Any]]] = None,
+    hide_grouped_codes: bool = False,
+    weight_col: Optional[str] = None,
 ) -> Dict[str, Any]:
     row_label, row_categories, merged_by_code = _build_concept_row_categories(bundle, concept_group)
+    weights, resolved_weight_col = _resolve_weight_values(df, weight_col)
     concept_categories = [
         OrderedCategory(
             raw_code=str(member.get("concept_code", "")),
@@ -1021,6 +1252,7 @@ def tabulate_sr_concept_comparison(
     if top_banner_var:
         top_frame, top_categories = _mapped_series(df, bundle, top_banner_var, include_all_categories=True)
         top_categories = _apply_column_ordering(bundle, top_categories)
+        top_codes, _ = _mapped_codes_for_question(df, bundle, top_banner_var)
         col_categories: List[OrderedCategory] = []
         for top_category in top_categories:
             for concept_category in concept_categories:
@@ -1031,7 +1263,6 @@ def tabulate_sr_concept_comparison(
                         order=top_category.order * 10000 + concept_category.order,
                     )
                 )
-        top_codes = list(top_frame["code"].tolist())
     else:
         col_categories = concept_categories
         top_codes = []
@@ -1046,6 +1277,9 @@ def tabulate_sr_concept_comparison(
         for row_index, code in enumerate(codes):
             if code is None:
                 continue
+            weight = weights[row_index] if row_index < len(weights) else 0.0
+            if weight == 0:
+                continue
             if code not in merged_by_code:
                 raise RuntimeError(
                     f"Concept comparison cannot map code '{code}' from question '{column}'."
@@ -1057,7 +1291,7 @@ def tabulate_sr_concept_comparison(
                 col_code = f"{top_code} | {concept_code}"
             else:
                 col_code = concept_code
-            rows.append({"row_code": code, "col_code": col_code, "count": 1})
+            rows.append({"row_code": code, "col_code": col_code, "count": weight})
 
     counts = pd.DataFrame(rows, columns=["row_code", "col_code", "count"])  # type: ignore[union-attr]
     if not counts.empty:
@@ -1075,6 +1309,10 @@ def tabulate_sr_concept_comparison(
         row_sort_mode="value_order" if bundle.source_kind == "codebook" else row_sort_mode,
         include_top2_box=include_top2_box,
         include_bottom2_box=include_bottom2_box,
+        custom_group_label=custom_group_label,
+        custom_group_codes=custom_group_codes,
+        custom_groups=custom_groups,
+        hide_grouped_codes=hide_grouped_codes,
     )
     return {
         "mode": "sr",
@@ -1087,6 +1325,7 @@ def tabulate_sr_concept_comparison(
         "tables": tables,
         "validation": [],
         "comparison_mode": "concept",
+        "weight_col": resolved_weight_col,
     }
 
 
@@ -1103,22 +1342,52 @@ def _format_ordered_tables(
     row_sort_mode: str,
     include_top2_box: bool = False,
     include_bottom2_box: bool = False,
+    custom_group_label: str = "",
+    custom_group_codes: Optional[List[str]] = None,
+    custom_groups: Optional[List[Dict[str, Any]]] = None,
+    hide_grouped_codes: bool = False,
+    base_col_totals_override: Optional[Dict[str, int]] = None,
+    base_grand_total_override: Optional[int] = None,
+    colpct_denominator_override: Optional[Dict[str, int]] = None,
+    custom_group_count_overrides: Optional[Dict[str, Dict[str, int]]] = None,
 ) -> List[Dict[str, Any]]:
     row_categories = apply_ordering(row_categories, row_sort_mode)
-    columns = [cat.label for cat in col_categories] + (["Total"] if include_totals else [])
-    count_lookup: Dict[Tuple[str, str], int] = {}
-    row_totals: Dict[str, int] = {cat.raw_code: 0 for cat in row_categories}
-    col_totals: Dict[str, int] = {cat.raw_code: 0 for cat in col_categories}
+    has_single_total_banner = len(col_categories) == 1 and str(col_categories[0].label) == "Total"
+    include_grand_total_column = include_totals and not has_single_total_banner
+    columns = [cat.label for cat in col_categories] + (["Total"] if include_grand_total_column else [])
+    count_lookup: Dict[Tuple[str, str], float] = {}
+    row_totals: Dict[str, float] = {cat.raw_code: 0.0 for cat in row_categories}
+    col_totals: Dict[str, float] = {cat.raw_code: 0.0 for cat in col_categories}
 
     for _, rec in counts_df.iterrows():
         row_code = str(rec["row_code"])
         col_code = str(rec["col_code"])
-        value = int(rec["count"])
+        value = float(rec["count"])
         count_lookup[(row_code, col_code)] = value
         row_totals[row_code] = row_totals.get(row_code, 0) + value
         col_totals[col_code] = col_totals.get(col_code, 0) + value
 
     grand_total = sum(row_totals.values())
+    base_col_totals = {str(key): float(value) for key, value in dict(base_col_totals_override or col_totals).items()}
+    base_grand_total = float(base_grand_total_override) if base_grand_total_override is not None else grand_total
+    colpct_denominators = {str(key): float(value) for key, value in dict(colpct_denominator_override or col_totals).items()}
+    hidden_group_codes: set[str] = set()
+    if hide_grouped_codes:
+        configured_groups = list(custom_groups or [])
+        if not configured_groups and (custom_group_label or custom_group_codes):
+            configured_groups = [
+                {"label": custom_group_label, "codes": list(custom_group_codes or [])}
+            ]
+        for group in configured_groups:
+            hidden_group_codes.update(
+                str(code).strip()
+                for code in list(group.get("codes", []) or [])
+                if str(code).strip()
+            )
+    visible_row_categories = [
+        category for category in row_categories
+        if category.raw_code not in hidden_group_codes
+    ]
 
     def display_row_label(category: OrderedCategory) -> str:
         if not show_row_codes:
@@ -1130,9 +1399,9 @@ def _format_ordered_tables(
         if include_base:
             base_row = {"__label__": "Base"}
             for cat in col_categories:
-                base_row[cat.label] = col_totals.get(cat.raw_code, 0)
-            if include_totals:
-                base_row["Total"] = grand_total
+                base_row[cat.label] = base_col_totals.get(cat.raw_code, 0)
+            if include_grand_total_column:
+                base_row["Total"] = base_grand_total
             rows_out.append(base_row)
 
         top2_categories = row_categories[:2] if row_sort_mode == "code_desc" else row_categories[-2:]
@@ -1171,10 +1440,43 @@ def _format_ordered_tables(
                 post_rows.append(bottom2_row)
             else:
                 pre_rows.append(bottom2_row)
+        configured_groups = list(custom_groups or [])
+        if not configured_groups and (custom_group_label or custom_group_codes):
+            configured_groups = [
+                {"label": custom_group_label, "codes": list(custom_group_codes or [])}
+            ]
+        for group in configured_groups:
+            group_label = str(group.get("label", ""))
+            group_override = (custom_group_count_overrides or {}).get(group_label)
+            if group_override is not None:
+                custom_group_row = _build_custom_group_row_from_counts(
+                    label=group_label,
+                    group_counts=group_override,
+                    col_categories=col_categories,
+                    col_denominators=colpct_denominators,
+                    grand_total=base_grand_total,
+                    kind=kind,
+                    include_totals=include_grand_total_column,
+                )
+            else:
+                custom_group_row = _build_custom_group_row(
+                    label=group_label,
+                    selected_codes=list(group.get("codes", []) or []),
+                    row_categories=row_categories,
+                    count_lookup=count_lookup,
+                    col_categories=col_categories,
+                    row_totals=row_totals,
+                    col_totals=col_totals,
+                    grand_total=grand_total,
+                    kind=kind,
+                    include_totals=include_grand_total_column,
+                )
+            if custom_group_row is not None:
+                pre_rows.append(custom_group_row)
 
         rows_out.extend(pre_rows)
 
-        for row_cat in row_categories:
+        for row_cat in visible_row_categories:
             row = {"__label__": display_row_label(row_cat), "__code__": row_cat.raw_code}
             row_total = row_totals.get(row_cat.raw_code, 0)
             for col_cat in col_categories:
@@ -1184,15 +1486,15 @@ def _format_ordered_tables(
                 elif kind == "rowpct":
                     row[col_cat.label] = (count / row_total * 100.0) if row_total > 0 else 0.0
                 else:
-                    col_total = col_totals.get(col_cat.raw_code, 0)
+                    col_total = colpct_denominators.get(col_cat.raw_code, 0)
                     row[col_cat.label] = (count / col_total * 100.0) if col_total > 0 else 0.0
-            if include_totals:
+            if include_grand_total_column:
                 if kind == "counts":
                     row["Total"] = row_total
                 elif kind == "rowpct":
                     row["Total"] = 100.0 if row_total > 0 else 0.0
                 else:
-                    row["Total"] = (row_total / grand_total * 100.0) if grand_total > 0 else 0.0
+                    row["Total"] = (row_total / base_grand_total * 100.0) if base_grand_total > 0 else 0.0
             rows_out.append(row)
 
         rows_out.extend(post_rows)
@@ -1483,18 +1785,38 @@ def tabulate_sr(
     row_sort_mode: str = "code_asc",
     include_top2_box: bool = False,
     include_bottom2_box: bool = False,
+    custom_group_label: str = "",
+    custom_group_codes: Optional[List[str]] = None,
+    custom_groups: Optional[List[Dict[str, Any]]] = None,
+    hide_grouped_codes: bool = False,
+    weight_col: Optional[str] = None,
 ) -> Dict[str, Any]:
     effective_row_sort_mode = "value_order" if bundle.source_kind == "codebook" else row_sort_mode
+    weights, resolved_weight_col = _resolve_weight_values(df, weight_col)
     row_frame, row_categories = _mapped_series(df, bundle, row_var, include_all_categories=include_all_categories)
+    row_codes, _ = _mapped_codes_for_question(df, bundle, row_var)
     col_frame, col_categories, col_label = _prepare_column_dimension(
         df,
         bundle,
         col_var,
         col_var2,
         include_all_categories=include_all_categories,
+        total_length_override=len(row_frame.index),
     )
-    usable = pd.concat([row_frame.add_prefix("row_"), col_frame.add_prefix("col_")], axis=1)  # type: ignore[union-attr]
-    counts = usable.groupby(["row_code", "col_code"], dropna=False).size().reset_index(name="count")
+    if not col_var or col_var == "(none)":
+        col_codes = ["__total__"] * len(df.index)
+    elif not col_var2 or col_var2 == "(none)":
+        col_codes, _ = _mapped_codes_for_question(df, bundle, col_var)
+    else:
+        col_codes = _composite_codes_for_questions(df, bundle, col_var, col_var2)
+    rows: List[Dict[str, Any]] = []
+    for row_code, col_code, weight in zip(row_codes, col_codes, weights):
+        if row_code is None or col_code is None or weight == 0:
+            continue
+        rows.append({"row_code": row_code, "col_code": col_code, "count": weight})
+    counts = pd.DataFrame(rows, columns=["row_code", "col_code", "count"])  # type: ignore[union-attr]
+    if not counts.empty:
+        counts = counts.groupby(["row_code", "col_code"], dropna=False)["count"].sum().reset_index()
     tables = _format_ordered_tables(
         counts,
         row_categories,
@@ -1508,6 +1830,10 @@ def tabulate_sr(
         row_sort_mode=effective_row_sort_mode,
         include_top2_box=include_top2_box,
         include_bottom2_box=include_bottom2_box,
+        custom_group_label=custom_group_label,
+        custom_group_codes=custom_group_codes,
+        custom_groups=custom_groups,
+        hide_grouped_codes=hide_grouped_codes,
     )
     return {
         "mode": "sr",
@@ -1517,6 +1843,7 @@ def tabulate_sr(
         "col_label_display": _preview_axis_label(col_label, "Columns"),
         "tables": tables,
         "validation": [],
+        "weight_col": resolved_weight_col,
     }
 
 
@@ -1535,35 +1862,103 @@ def tabulate_mr(
     show_row_codes: bool = False,
     row_sort_mode: str = "code_asc",
     mr_detection: Optional[Dict[str, Any]] = None,
+    custom_groups: Optional[List[Dict[str, Any]]] = None,
+    hide_grouped_codes: bool = False,
+    weight_col: Optional[str] = None,
 ) -> Dict[str, Any]:
+    weights, resolved_weight_col = _resolve_weight_values(df, weight_col)
     col_frame, col_categories, col_label = _prepare_column_dimension(
         df,
         bundle,
         col_var,
         col_var2,
         include_all_categories=include_all_categories,
+        total_length_override=len(df.index),
     )
+    if not col_var or col_var == "(none)":
+        col_codes = ["__total__"] * len(df.index)
+    elif not col_var2 or col_var2 == "(none)":
+        col_codes, _ = _mapped_codes_for_question(df, bundle, col_var)
+    else:
+        col_codes = _composite_codes_for_questions(df, bundle, col_var, col_var2)
 
     mr_row_label, row_categories, column_to_category = _build_mr_row_categories(bundle, mr_cols, mr_detection)
     allowed = {"1", "true", "yes", "y", "t"}
     valid_dichotomy = {"0", "1", "true", "false", "yes", "no", "y", "n", "t", "f"}
     rows: List[Dict[str, Any]] = []
+    selected_by_question: Dict[str, List[Optional[str]]] = {}
     for question in mr_cols:
         selected_codes = [_normalize_response_value(v) for v in df[question].tolist()]
+        selected_by_question[question] = selected_codes
         observed = {code.lower() for code in selected_codes if code is not None}
         invalid = sorted(code for code in observed if code not in valid_dichotomy)
         if invalid:
             shown = ", ".join(invalid[:10])
             raise RuntimeError(f"MR column '{question}' contains non-dichotomy values: {shown}")
         row_category = column_to_category[question]
-        for selected, col_row in zip(selected_codes, col_frame.to_dict("records")):
-            if selected is None or selected.lower() not in allowed:
+        for selected, col_code, weight in zip(selected_codes, col_codes, weights):
+            if selected is None or selected.lower() not in allowed or col_code is None or weight == 0:
                 continue
-            rows.append({"row_code": row_category.raw_code, "col_code": col_row["code"], "count": 1})
+            rows.append({"row_code": row_category.raw_code, "col_code": col_code, "count": weight})
+
+    respondent_base_rows: List[Tuple[str, float]] = []
+    respondent_count = min(
+        [len(col_codes), len(weights)] + [len(codes) for codes in selected_by_question.values()]
+    ) if selected_by_question else 0
+    for idx in range(respondent_count):
+        answered = any(
+            selected_by_question[question][idx] is not None and selected_by_question[question][idx].lower() in allowed
+            for question in mr_cols
+        )
+        if not answered:
+            continue
+        col_code = col_codes[idx]
+        weight = weights[idx]
+        if col_code is None or weight == 0:
+            continue
+        respondent_base_rows.append((str(col_code), weight))
+    base_col_totals: Dict[str, float] = {str(cat.raw_code): 0.0 for cat in col_categories}
+    for code, weight in respondent_base_rows:
+        base_col_totals[code] = base_col_totals.get(code, 0) + weight
+    base_grand_total = sum(weight for _, weight in respondent_base_rows)
 
     counts = pd.DataFrame(rows, columns=["row_code", "col_code", "count"])  # type: ignore[union-attr]
     if not counts.empty:
         counts = counts.groupby(["row_code", "col_code"], dropna=False)["count"].sum().reset_index()
+    resolved_custom_groups: List[Dict[str, Any]] = []
+    custom_group_count_overrides: Dict[str, Dict[str, float]] = {}
+    for group in list(custom_groups or []):
+        resolved_codes: List[str] = []
+        for raw_code in list(group.get("codes", []) or []):
+            token = str(raw_code).strip()
+            if not token:
+                continue
+            category = column_to_category.get(token)
+            if category is not None:
+                resolved_codes.append(category.raw_code)
+            elif any(row_category.raw_code == token for row_category in row_categories):
+                resolved_codes.append(token)
+        group_label = str(group.get("label", ""))
+        resolved_custom_groups.append({"label": group_label, "codes": resolved_codes})
+        if group_label and resolved_codes:
+            grouped_counts: Dict[str, float] = {str(cat.raw_code): 0.0 for cat in col_categories}
+            included_questions = [
+                question for question, category in column_to_category.items()
+                if category.raw_code in set(resolved_codes)
+            ]
+            for idx in range(respondent_count):
+                matched = any(
+                    selected_by_question[question][idx] is not None and selected_by_question[question][idx].lower() in allowed
+                    for question in included_questions
+                )
+                if not matched:
+                    continue
+                col_code = col_codes[idx]
+                weight = weights[idx]
+                if col_code is None or weight == 0:
+                    continue
+                grouped_counts[str(col_code)] = grouped_counts.get(str(col_code), 0) + weight
+            custom_group_count_overrides[group_label] = grouped_counts
     tables = _format_ordered_tables(
         counts,
         row_categories,
@@ -1575,6 +1970,12 @@ def tabulate_mr(
         out_colpct=out_colpct,
         show_row_codes=False,
         row_sort_mode="value_order" if bundle.source_kind == "codebook" else "code_asc",
+        custom_groups=resolved_custom_groups,
+        hide_grouped_codes=hide_grouped_codes,
+        base_col_totals_override=base_col_totals,
+        base_grand_total_override=base_grand_total,
+        colpct_denominator_override=base_col_totals,
+        custom_group_count_overrides=custom_group_count_overrides,
     )
     return {
         "mode": "mr",
@@ -1584,12 +1985,16 @@ def tabulate_mr(
         "col_label_display": _preview_axis_label(col_label, "Columns"),
         "tables": tables,
         "validation": [],
+        "weight_col": resolved_weight_col,
     }
 
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request, "title": APP_TITLE, "job": None, "result": None})
+    return templates.TemplateResponse(
+        "index.html",
+        {"request": request, "title": APP_TITLE, "version": APP_VERSION, "job": None, "result": None},
+    )
 
 
 @app.post("/upload", response_class=HTMLResponse)
@@ -1648,6 +2053,27 @@ async def upload(
     mr_detection = detect_mr_groups(df)
     concept_detection = detect_concept_groups([str(column) for column in df.columns])
 
+    # Build column_codes dictionary for filter functionality
+    column_codes = {}
+    if pd is not None:
+        for col in df.columns:
+            try:
+                unique_values = df[col].dropna().unique()
+                column_codes[col] = [str(val) for val in unique_values if val is not None]
+            except Exception:
+                column_codes[col] = []
+    else:
+        # Fallback for polars
+        for col in df.columns:
+            try:
+                unique_values = df[col].drop_nulls().unique()
+                column_codes[col] = [str(val) for val in unique_values]
+            except Exception:
+                column_codes[col] = []
+
+    columns = [str(column) for column in df.columns]
+    filter_value_options = _build_filter_value_options(df, mapping_bundle)
+
     JOBS[job_id] = {
         "id": job_id,
         "name": os.path.basename(text_path),
@@ -1655,7 +2081,11 @@ async def upload(
         "value_path": value_path,
         "value_df": None,
         "mapping_bundle": mapping_bundle,
-        "columns": df.columns,
+        "groupable_question_options": _groupable_question_options(mapping_bundle),
+        "columns": columns,
+        "column_display_labels": _column_display_labels(columns),
+        "column_codes": column_codes,
+        "filter_value_options": filter_value_options,
         "dich_cols": dich_cols,
         "mr_detection": mr_detection,
         "concept_detection": concept_detection,
@@ -1671,14 +2101,14 @@ async def upload(
         )
     return templates.TemplateResponse(
         "index.html",
-        {"request": request, "title": APP_TITLE, "job": JOBS[job_id], "result": None},
+        {"request": request, "title": APP_TITLE, "version": APP_VERSION, "job": JOBS[job_id], "result": None},
     )
 
 @app.post("/run", response_class=HTMLResponse)
 def run(
     request: Request,
     job_id: str = Form(...),
-    row_var: str = Form(...),
+    row_var: str = Form("(none)"),
     col_var: str = Form("(none)"),
     col_var2: str = Form("(none)"),
     qtype: str = Form("sr"),
@@ -1693,6 +2123,11 @@ def run(
     compare_concepts: str | None = Form(None),
     include_top2_box: str | None = Form(None),
     include_bottom2_box: str | None = Form(None),
+    hide_grouped_codes: str | None = Form(None),
+    custom_group_definitions: str = Form(""),
+    custom_group_label: str = Form(""),
+    custom_group_codes: List[str] = Form([]),
+    filter_data: str = Form(""),
     row_sort_mode: str = Form("code_asc"),
     include_base: str | None = Form(None),
     include_totals: str | None = Form(None),
@@ -1707,6 +2142,43 @@ def run(
     if pd is None:
         return _render_error_panel("Pandas is required for ordered tabulation.")
     df = _get_job_value_dataframe(job)
+    parsed_filter_data: Dict[str, Any] = {}
+    filter_preview = {"human_readable": "No filters applied", "structured": "{}"}
+    filter_warnings: List[str] = []
+    if str(filter_data).strip():
+        try:
+            parsed_filter_data = json.loads(str(filter_data))
+        except Exception:
+            return _render_error_panel("Invalid filter configuration.")
+        if parsed_filter_data.get("active"):
+            filter_warnings = _filter_logic_warnings(parsed_filter_data)
+            try:
+                df = apply_filters_to_dataframe(df, parsed_filter_data)
+            except Exception as e:
+                return _render_error_panel(f"Filter error: {e}")
+            filter_preview = generate_filter_preview(parsed_filter_data)
+
+    # Populate column_codes if missing (for existing jobs)
+    if "column_codes" not in job or not job["column_codes"]:
+        column_codes = {}
+        if pd is not None:
+            for col in df.columns:
+                try:
+                    unique_values = df[col].dropna().unique()
+                    column_codes[col] = [str(val) for val in unique_values if val is not None]
+                except Exception:
+                    column_codes[col] = []
+        else:
+            # Fallback for polars
+            for col in df.columns:
+                try:
+                    unique_values = df[col].drop_nulls().unique()
+                    column_codes[col] = [str(val) for val in unique_values]
+                except Exception:
+                    column_codes[col] = []
+        job["column_codes"] = column_codes
+    if "filter_value_options" not in job or not job["filter_value_options"]:
+        job["filter_value_options"] = _build_filter_value_options(df, mapping_bundle)
 
     f_counts = out_counts is not None
     f_rowpct = out_rowpct is not None
@@ -1718,6 +2190,12 @@ def run(
     f_compare_concepts = compare_concepts is not None
     f_top2_box = include_top2_box is not None
     f_bottom2_box = include_bottom2_box is not None
+    f_hide_grouped_codes = hide_grouped_codes is not None
+    parsed_custom_groups = _parse_custom_group_definitions(
+        custom_group_definitions,
+        single_label=custom_group_label,
+        single_codes=custom_group_codes,
+    )
     if row_sort_mode not in {"code_asc", "code_desc"}:
         return _render_error_panel("Invalid row sort mode.")
 
@@ -1728,24 +2206,24 @@ def run(
         if qtype == "mr":
             if not mr_cols:
                 return _render_error_panel("No MR columns selected.")
-            if col_var == "(none)":
-                fallback_col = _default_banner_column(job.get("columns", []), disallowed=set(mr_cols))
-                if fallback_col is None:
-                    return _render_error_panel("Choose a Column variable (Layer 1) for multiple-response crosstabs.")
-                col_var = fallback_col
             result = tabulate_mr(
                 df,
                 bundle=mapping_bundle,
                 mr_cols=mr_cols,
                 col_var=col_var,
-                col_var2=None if col_var2 == "(none)" else col_var2,
+                col_var2=None if col_var in {"", "(none)"} or col_var2 == "(none)" else col_var2,
                 include_totals=f_totals, include_base=f_base,
                 out_counts=f_counts, out_rowpct=f_rowpct, out_colpct=f_colpct,
                 show_row_codes=f_show_row_codes,
                 row_sort_mode="code_asc",
                 mr_detection=job.get("mr_detection"),
+                custom_groups=parsed_custom_groups,
+                hide_grouped_codes=f_hide_grouped_codes,
+                weight_col=weight_col,
             )
         else:
+            if row_var in {"", "(none)"}:
+                return _render_error_panel("Select a row variable.")
             if f_compare_concepts:
                 concept_detection = job.get("concept_detection") or {}
                 concept_group = (concept_detection.get("member_to_group") or {}).get(row_var)
@@ -1767,26 +2245,49 @@ def run(
                     row_sort_mode=row_sort_mode,
                     include_top2_box=f_top2_box,
                     include_bottom2_box=f_bottom2_box,
+                    custom_group_label=custom_group_label,
+                    custom_group_codes=custom_group_codes,
+                    custom_groups=parsed_custom_groups,
+                    hide_grouped_codes=f_hide_grouped_codes,
+                    weight_col=weight_col,
                 )
             else:
-                if col_var == "(none)":
-                    fallback_col = _default_banner_column(job.get("columns", []), disallowed={row_var})
-                    if fallback_col is None:
-                        return _render_error_panel("Choose a Column variable (Layer 1) for a normal crosstab.")
-                    col_var = fallback_col
                 result = tabulate_sr(
                     df,
                     bundle=mapping_bundle,
                     row_var=row_var,
                     col_var=col_var,
-                    col_var2=None if col_var2 == "(none)" else col_var2,
+                    col_var2=None if col_var in {"", "(none)"} or col_var2 == "(none)" else col_var2,
                     include_totals=f_totals, include_base=f_base,
                     out_counts=f_counts, out_rowpct=f_rowpct, out_colpct=f_colpct,
                     show_row_codes=f_show_row_codes,
                     row_sort_mode=row_sort_mode,
                     include_top2_box=f_top2_box,
                     include_bottom2_box=f_bottom2_box,
+                    custom_group_label=custom_group_label,
+                    custom_group_codes=custom_group_codes,
+                    custom_groups=parsed_custom_groups,
+                    hide_grouped_codes=f_hide_grouped_codes,
+                    weight_col=weight_col,
                 )
+                result["row_var"] = row_var
+        result["col_var"] = col_var
+        result["col_var2"] = col_var2
+        result["mode"] = qtype
+        result["weight_col"] = weight_col
+        result["show_row_codes"] = f_show_row_codes
+        result["include_top2_box"] = f_top2_box
+        result["include_bottom2_box"] = f_bottom2_box
+        result["custom_group_definitions"] = custom_group_definitions
+        result["custom_group_label"] = custom_group_label
+        result["row_sort_mode"] = row_sort_mode
+        result["hide_grouped_codes"] = f_hide_grouped_codes
+        result["mr_cols"] = mr_cols if qtype == "mr" else []
+        result["filter_data"] = parsed_filter_data
+        result["filter_preview"] = filter_preview
+        result["filter_active"] = bool(parsed_filter_data.get("active"))
+        if filter_warnings:
+            result["validation"] = list(result.get("validation") or []) + filter_warnings
         if f_transpose:
             result = _transpose_result(result)
         result["mapping_assumptions"] = list(mapping_bundle.assumptions)
@@ -1911,15 +2412,17 @@ async def resequence_saved_outputs(request: Request, job_id: str):
     return _render_result_panel(request, job)
 
 
-@app.get("/export-saved/{job_id}")
-def export_saved_outputs(job_id: str, mode: str = "individual"):
-    job = JOBS.get(job_id)
-    if not job:
-        return HTMLResponse("Invalid job id", status_code=400)
 
-    saved_outputs = job.get("saved_outputs") or []
+
+@app.get("/export-saved/{job_id}")
+def export_saved(job_id: str, mode: str = "single"):
+    if job_id not in JOBS:
+        return HTMLResponse("Job not found.", status_code=404)
+
+    job = JOBS[job_id]
+    saved_outputs = job.get("saved_outputs", [])
     if not saved_outputs:
-        return HTMLResponse("No saved outputs available for group export.", status_code=400)
+        return HTMLResponse("No result to export for this job.", status_code=400)
     if mode not in {"individual", "single"}:
         return HTMLResponse("Invalid group export mode.", status_code=400)
 
@@ -1973,6 +2476,7 @@ def export_excel(job_id: str):
     # Mirror the preview behaviour: if the user chose to show the percent sign,
     # append "%" on Row% / Column% exports (but not on base rows).
     pct_suffix = bool(job.get("last_pct_suffix", False))
+    weighted_counts = bool(result.get("weight_col"))
     wb = Workbook()
     # remove default sheet
     ws0 = wb.active
@@ -2035,14 +2539,14 @@ def export_excel(job_id: str):
             for j,c in enumerate(cols, start=2):
                 v = r.get(c, "")
                 # Export formatting: whole numbers only.
-                # - Counts/Base: integers
+                # - Counts/Base: integers unless weighted
                 # - Row%/Col%: integer percentages
                 if isinstance(v, (int, float)):
                     if tbl_kind in ("rowpct", "colpct") and row_label != "Base":
                         vv = int(round(float(v)))
                         v = f"{vv}%" if pct_suffix else vv
                     else:
-                        v = int(round(float(v)))
+                        v = round(float(v), 2) if weighted_counts else int(round(float(v)))
                 cell = ws.cell(row=i, column=j, value=v)
                 # base row highlight
                 if row_label == "Base":
@@ -2077,3 +2581,630 @@ def export_excel(job_id: str):
     filename = f"crosstab_{job_id}.xlsx"
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return StreamingResponse(bio, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers)
+
+
+# Filter System Functions
+
+@dataclass
+class FilterCondition:
+    variable: str
+    operator: str
+    value: str
+    variable_type: str = "text"
+
+
+@dataclass
+class FilterGroup:
+    operator: str  # "AND" or "OR"
+    conditions: List[FilterCondition]
+    nested_groups: List['FilterGroup'] = None
+
+
+def _detect_variable_type(df: "pd.DataFrame", column: str) -> str:
+    """Detect the type of a variable for filtering purposes."""
+    if column not in df.columns:
+        return "text"
+    
+    series = df[column]
+    
+    # Check if it's numeric
+    if pd.api.types.is_numeric_dtype(series):
+        return "numeric"
+    
+    # Check if it's boolean-like
+    if _is_dichotomy_series(series):
+        return "boolean"
+    
+    # Check if it has limited unique values (categorical)
+    unique_count = series.dropna().nunique()
+    if unique_count <= 20 and unique_count < len(series) * 0.5:
+        return "categorical"
+    
+    return "text"
+
+
+def _get_operators_for_type(var_type: str) -> List[str]:
+    """Get available operators for a variable type."""
+    if var_type == "numeric":
+        return ["=", "!=", ">", ">=", "<=", "between"]
+    elif var_type == "boolean":
+        return ["=", "!="]
+    elif var_type == "categorical":
+        return ["=", "!=", "is", "is not", "in list"]
+    else:  # text
+        return ["=", "!=", "contains", "starts with", "ends with"]
+
+
+def _apply_filter_condition(df: "pd.DataFrame", condition: FilterCondition) -> "pd.DataFrame":
+    """Apply a single filter condition to a dataframe."""
+    if condition.variable not in df.columns:
+        return df
+    
+    series = df[condition.variable]
+    normalized_value = str(condition.value).strip()
+
+    def _normalized_text_mask(expected: str, negate: bool = False):
+        series_text = series.astype(str).str.strip()
+        mask = series_text == expected
+        return ~mask if negate else mask
+
+    def _normalized_numeric_mask(expected: str, negate: bool = False):
+        numeric_series = pd.to_numeric(series, errors='coerce')
+        expected_number = pd.to_numeric(pd.Series([expected]), errors='coerce').iloc[0]
+        if pd.isna(expected_number):
+            return _normalized_text_mask(expected, negate=negate)
+        mask = numeric_series == expected_number
+        return ~mask if negate else mask
+    
+    if condition.operator == "=":
+        if pd.api.types.is_numeric_dtype(series):
+            mask = _normalized_numeric_mask(normalized_value)
+        else:
+            mask = _normalized_text_mask(normalized_value)
+    elif condition.operator == "!=":
+        if pd.api.types.is_numeric_dtype(series):
+            mask = _normalized_numeric_mask(normalized_value, negate=True)
+        else:
+            mask = _normalized_text_mask(normalized_value, negate=True)
+    elif condition.operator == ">":
+        mask = pd.to_numeric(series, errors='coerce') > float(normalized_value)
+    elif condition.operator == ">=":
+        mask = pd.to_numeric(series, errors='coerce') >= float(normalized_value)
+    elif condition.operator == "<":
+        mask = pd.to_numeric(series, errors='coerce') < float(normalized_value)
+    elif condition.operator == "<=":
+        mask = pd.to_numeric(series, errors='coerce') <= float(normalized_value)
+    elif condition.operator == "between":
+        try:
+            min_val, max_val = normalized_value.split(",")
+            mask = pd.to_numeric(series, errors='coerce').between(float(min_val), float(max_val))
+        except:
+            mask = pd.Series([False] * len(series))
+    elif condition.operator == "contains":
+        mask = series.astype(str).str.contains(normalized_value, na=False)
+    elif condition.operator == "starts with":
+        mask = series.astype(str).str.startswith(normalized_value, na=False)
+    elif condition.operator == "ends with":
+        mask = series.astype(str).str.endswith(normalized_value, na=False)
+    elif condition.operator == "is":
+        if pd.api.types.is_numeric_dtype(series):
+            mask = _normalized_numeric_mask(normalized_value)
+        else:
+            mask = _normalized_text_mask(normalized_value)
+    elif condition.operator == "is not":
+        if pd.api.types.is_numeric_dtype(series):
+            mask = _normalized_numeric_mask(normalized_value, negate=True)
+        else:
+            mask = _normalized_text_mask(normalized_value, negate=True)
+    elif condition.operator == "in list":
+        values = [v.strip() for v in normalized_value.split(",") if v.strip()]
+        if pd.api.types.is_numeric_dtype(series):
+            numeric_values = pd.to_numeric(pd.Series(values), errors='coerce').dropna().tolist()
+            if numeric_values:
+                mask = pd.to_numeric(series, errors='coerce').isin(numeric_values)
+            else:
+                mask = series.astype(str).str.strip().isin(values)
+        else:
+            mask = series.astype(str).str.strip().isin(values)
+    else:
+        mask = pd.Series([True] * len(series))
+    
+    return df[mask]
+
+
+def _apply_filter_group(df: "pd.DataFrame", group: FilterGroup) -> "pd.DataFrame":
+    """Apply a filter group (with conditions and nested groups) to a dataframe."""
+    if not group.conditions and not group.nested_groups:
+        return df
+    
+    results = []
+    
+    # Apply conditions in this group
+    if group.conditions:
+        if group.operator == "AND":
+            condition_result = df.copy()
+            for condition in group.conditions:
+                condition_result = _apply_filter_condition(condition_result, condition)
+            results.append(condition_result)
+        else:
+            for condition in group.conditions:
+                results.append(_apply_filter_condition(df, condition))
+    
+    # Apply nested groups
+    if group.nested_groups:
+        for nested_group in group.nested_groups:
+            nested_result = _apply_filter_group(df, nested_group)
+            results.append(nested_result)
+    
+    if not results:
+        return df
+    
+    if group.operator == "AND":
+        # For AND, intersect all results
+        result = results[0]
+        for other_result in results[1:]:
+            result = pd.merge(result, other_result, how='inner', on=list(df.columns))
+        return result
+    else:  # OR
+        # For OR, union matching respondent rows without collapsing duplicate values.
+        combined = pd.concat(results, axis=0)
+        combined = combined.loc[~combined.index.duplicated(keep='first')]
+        return combined.sort_index()
+
+
+def parse_quick_filter(conditions_data: List[Dict[str, str]], match_type: str) -> FilterGroup:
+    """Parse quick filter data into a FilterGroup."""
+    conditions = []
+    for cond_data in conditions_data:
+        if not cond_data.get('variable') or not cond_data.get('operator'):
+            continue
+        conditions.append(FilterCondition(
+            variable=cond_data['variable'],
+            operator=cond_data['operator'],
+            value=cond_data.get('value', ''),
+            variable_type=cond_data.get('variable_type', 'text')
+        ))
+
+    group_operator = "OR" if str(match_type).lower() == "any" else "AND"
+    return FilterGroup(operator=group_operator, conditions=conditions)
+
+
+def parse_advanced_filter(groups_data: List[Dict[str, Any]]) -> FilterGroup:
+    """Parse advanced filter data into nested FilterGroups."""
+    groups = []
+    for group_data in groups_data:
+        conditions = []
+        for cond_data in group_data.get('conditions', []):
+            if not cond_data.get('variable') or not cond_data.get('operator'):
+                continue
+            conditions.append(FilterCondition(
+                variable=cond_data['variable'],
+                operator=cond_data['operator'],
+                value=cond_data.get('value', ''),
+                variable_type=cond_data.get('variable_type', 'text')
+            ))
+        
+        nested_groups = []
+        for nested_data in group_data.get('nested_groups', []):
+            nested_groups.append(parse_advanced_filter([nested_data]))
+        
+        groups.append(FilterGroup(
+            operator=group_data.get('operator') or group_data.get('group_operator', 'AND'),
+            conditions=conditions,
+            nested_groups=nested_groups
+        ))
+    
+    # If multiple groups, combine them with AND
+    if len(groups) == 1:
+        return groups[0]
+    else:
+        return FilterGroup(operator="AND", conditions=[], nested_groups=groups)
+
+
+def _filter_logic_warnings(filter_data: Dict[str, Any]) -> List[str]:
+    warnings: List[str] = []
+    if not filter_data or not filter_data.get("active"):
+        return warnings
+
+    def check_conditions(conditions: List[Dict[str, Any]], join_operator: str) -> None:
+        if str(join_operator).upper() != "AND":
+            return
+        equals_by_variable: Dict[str, set[str]] = {}
+        for cond in conditions:
+            variable = str(cond.get("variable", "") or "")
+            operator = str(cond.get("operator", "") or "").strip().lower()
+            value = str(cond.get("value", "") or "").strip()
+            if not variable or not value:
+                continue
+            if operator not in {"=", "is"}:
+                continue
+            equals_by_variable.setdefault(variable, set()).add(value)
+        for variable, values in equals_by_variable.items():
+            if len(values) > 1:
+                rendered = ", ".join(sorted(values))
+                warnings.append(
+                    f"Filter warning: {variable} is checked against multiple exact values ({rendered}) with AND, so a single-response variable will return 0 rows."
+                )
+
+    if filter_data.get("type", "quick") == "quick":
+        match_type = "AND" if str(filter_data.get("match_type", "all")).lower() == "all" else "OR"
+        check_conditions(list(filter_data.get("conditions", []) or []), match_type)
+    else:
+        for group in list(filter_data.get("groups", []) or []):
+            operator = str(group.get("operator") or group.get("group_operator") or "AND")
+            check_conditions(list(group.get("conditions", []) or []), operator)
+    return warnings
+
+
+def apply_filters_to_dataframe(df: "pd.DataFrame", filter_data: Dict[str, Any]) -> "pd.DataFrame":
+    """Apply filters to a dataframe based on filter data."""
+    if not filter_data or not filter_data.get('active'):
+        return df
+    
+    filter_type = filter_data.get('type', 'quick')
+    
+    if filter_type == 'quick':
+        conditions = filter_data.get('conditions', [])
+        match_type = filter_data.get('match_type', 'all')
+        if not conditions:
+            return df
+        
+        filter_group = parse_quick_filter(conditions, match_type)
+        return _apply_filter_group(df, filter_group)
+    
+    elif filter_type == 'advanced':
+        groups = filter_data.get('groups', [])
+        if not groups:
+            return df
+        
+        filter_group = parse_advanced_filter(groups)
+        return _apply_filter_group(df, filter_group)
+    
+    return df
+
+
+def generate_filter_preview(filter_data: Dict[str, Any]) -> Dict[str, str]:
+    """Generate human-readable and structured previews of filter logic."""
+    if not filter_data or not filter_data.get('active'):
+        return {
+            "human_readable": "No filters applied",
+            "structured": "{}"
+        }
+    
+    filter_type = filter_data.get('type', 'quick')
+    
+    if filter_type == 'quick':
+        conditions = filter_data.get('conditions', [])
+        match_type = filter_data.get('match_type', 'all')
+        
+        if not conditions:
+            return {
+                "human_readable": "No filters defined",
+                "structured": "{}"
+            }
+        
+        condition_texts = []
+        for cond in conditions:
+            var = cond.get('variable', '')
+            op = cond.get('operator', '')
+            val = cond.get('value', '')
+            condition_texts.append(f"{var} {op} {val}")
+        
+        if match_type == 'all':
+            human_readable = " AND ".join(condition_texts)
+        else:
+            human_readable = " OR ".join(condition_texts)
+        
+        structured = {
+            "type": "quick",
+            "match_type": match_type,
+            "conditions": conditions
+        }
+        
+    else:  # advanced
+        groups = filter_data.get('groups', [])
+        
+        if not groups:
+            return {
+                "human_readable": "No filters defined",
+                "structured": "{}"
+            }
+        
+        group_texts = []
+        structured_groups = []
+        
+        for group in groups:
+            operator = group.get('operator') or group.get('group_operator', 'AND')
+            conditions = group.get('conditions', [])
+            nested_groups = group.get('nested_groups', [])
+            
+            condition_texts = []
+            structured_conditions = []
+            
+            for cond in conditions:
+                var = cond.get('variable', '')
+                op = cond.get('operator', '')
+                val = cond.get('value', '')
+                condition_texts.append(f"{var} {op} {val}")
+                structured_conditions.append({
+                    "variable": var,
+                    "operator": op,
+                    "value": val
+                })
+            
+            group_text = f"({f' {operator} '.join(condition_texts)})" if condition_texts else ""
+            group_texts.append(group_text)
+            
+            structured_groups.append({
+                "operator": operator,
+                "conditions": structured_conditions,
+                "nested_groups": nested_groups
+            })
+        
+        human_readable = " AND ".join([gt for gt in group_texts if gt])
+        structured = {
+            "type": "advanced",
+            "groups": structured_groups
+        }
+    
+    return {
+        "human_readable": human_readable,
+        "structured": str(structured).replace("'", '"')
+    }
+
+
+@app.post("/get-variable-info")
+async def get_variable_info(request: Request, job_id: str = Form(...), variable: str = Form(...)):
+    """Get information about a variable including type and available operators."""
+    if job_id not in JOBS:
+        return JSONResponse({"error": "Invalid job ID"}, status_code=404)
+    
+    job = JOBS[job_id]
+    df = _get_job_value_dataframe(job)
+    
+    var_type = _detect_variable_type(df, variable)
+    operators = _get_operators_for_type(var_type)
+    
+    # Get unique values for categorical/text variables
+    unique_values = []
+    value_options = []
+    mapping_bundle = job.get("mapping_bundle")
+    if mapping_bundle is not None and variable in getattr(mapping_bundle, "questions", {}):
+        try:
+            mapping = mapping_bundle.questions[variable]
+            value_options = [
+                {
+                    "value": str(category.raw_code),
+                    "label": f"{category.raw_code} - {category.label}",
+                }
+                for category in mapping.categories
+            ]
+            unique_values = [str(category.raw_code) for category in mapping.categories]
+        except Exception:
+            value_options = []
+    if var_type in ["categorical", "text", "boolean"]:
+        try:
+            if not unique_values:
+                unique_vals = df[variable].dropna().unique()
+                unique_values = [str(val) for val in unique_vals[:50]]  # Limit to 50 values
+            if not value_options:
+                value_options = [{"value": str(val), "label": str(val)} for val in unique_values]
+        except Exception:
+            pass
+    
+    return JSONResponse({
+        "type": var_type,
+        "operators": operators,
+        "unique_values": unique_values,
+        "value_options": value_options or job.get("filter_value_options", {}).get(variable, []),
+    })
+
+
+@app.post("/preview-filter")
+async def preview_filter_logic(request: Request, filter_data: str = Form(...)):
+    """Preview filter logic without applying it."""
+    try:
+        import json
+        filter_dict = json.loads(filter_data)
+        preview = generate_filter_preview(filter_dict)
+        return JSONResponse(preview)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+@app.get("/test-filter", response_class=HTMLResponse)
+async def test_filter_panel(request: Request):
+    """Test endpoint to verify filter panel is working."""
+    # Use absolute path for template
+    template_path = os.path.join(BASE_DIR, "templates", "test_filter.html")
+    if not os.path.exists(template_path):
+        return HTMLResponse("<h1>Template not found</h1>", status_code=404)
+    
+    with open(template_path, 'r', encoding='utf-8') as f:
+        template_content = f.read()
+    
+    # Simple template rendering without Jinja2 for this test
+    from jinja2 import Template
+    template = Template(template_content)
+    rendered = template.render({
+        "request": request, 
+        "title": "Filter Test", 
+        "cols": ["test_var1", "test_var2", "test_var3"]
+    })
+    
+    return HTMLResponse(rendered)
+
+
+@app.get("/variables")
+async def get_variables(dataset_id: str):
+    """Get variables and metadata for a dataset."""
+    if dataset_id not in JOBS:
+        return JSONResponse({"error": "Invalid job ID"}, status_code=404)
+    
+    job = JOBS[dataset_id]
+    return JSONResponse({
+        "columns": list(job.get("columns", [])),
+        "dich_cols": list(job.get("dich_cols", [])),
+        "mr_detection": job.get("mr_detection", {}),
+        "concept_detection": job.get("concept_detection", {}),
+        "column_codes": job.get("column_codes", {})
+    })
+
+
+@app.post("/crosstab", response_class=JSONResponse)
+async def crosstab_endpoint(request: Request, payload: Dict[str, Any]):
+    """Generate crosstab with optional filtering."""
+    try:
+        job_id = payload.get("dataset_id")
+        if not job_id or job_id not in JOBS:
+            return JSONResponse({"error": "Invalid job ID"}, status_code=404)
+        
+        job = JOBS[job_id]
+        mapping_bundle = job.get("mapping_bundle")
+        if mapping_bundle is None:
+            return JSONResponse({"error": "This crosstab requires an uploaded text workbook paired with Value.xlsx."}, status_code=400)
+        
+        if pd is None:
+            return JSONResponse({"error": "Pandas is required for ordered tabulation."}, status_code=400)
+        
+        df = _get_job_value_dataframe(job)
+        
+        # Apply filters if provided
+        filter_data = payload.get("filter_data")
+        if filter_data and filter_data.get("active"):
+            df = apply_filters_to_dataframe(df, filter_data)
+        
+        # Extract parameters
+        row_var = payload.get("row", "(none)")
+        col_var = payload.get("col1", "(none)")
+        col_var2 = payload.get("col2", "(none)")
+        weight_col = payload.get("weight", "(none)")
+        qtype = "mr" if payload.get("mr_mode") else "sr"
+        mr_cols = []  # TODO: extract from payload if needed
+        
+        # Parse boolean options
+        include_counts = payload.get("include_counts", True)
+        include_row_pct = payload.get("include_row_pct", True)
+        include_col_pct = payload.get("include_col_pct", True)
+        include_totals = payload.get("include_totals", True)
+        include_base = payload.get("include_base", True)
+        transpose_table = payload.get("transpose_table", False)
+        show_row_codes = payload.get("show_row_codes", False)
+        compare_concepts = payload.get("compare_concepts", False)
+        include_top2_box = payload.get("include_top2_box", False)
+        include_bottom2_box = payload.get("include_bottom2_box", False)
+        hide_grouped_codes = payload.get("hide_grouped_codes", False)
+        row_sort_mode = payload.get("row_sort_mode", "code_asc")
+        mr_value = payload.get("mr_value", "1")
+        custom_group_definitions = payload.get("custom_group_definitions", "")
+        custom_group_label = payload.get("custom_group_label", "")
+        custom_group_codes = payload.get("custom_group_codes", [])
+        
+        # Validate required parameters
+        if not any([include_counts, include_row_pct, include_col_pct]):
+            return JSONResponse({"error": "Select at least one output option."}, status_code=400)
+        
+        # Generate crosstab
+        if qtype == "mr":
+            if not mr_cols:
+                return JSONResponse({"error": "No MR columns selected."}, status_code=400)
+            result = tabulate_mr(
+                df,
+                bundle=mapping_bundle,
+                mr_cols=mr_cols,
+                col_var=col_var,
+                col_var2=None if col_var in {"", "(none)"} or col_var2 == "(none)" else col_var2,
+                include_totals=include_totals, 
+                include_base=include_base,
+                out_counts=include_counts, 
+                out_rowpct=include_row_pct, 
+                out_colpct=include_col_pct,
+                show_row_codes=show_row_codes,
+                row_sort_mode="code_asc",
+                mr_detection=job.get("mr_detection"),
+                custom_groups=_parse_custom_group_definitions(
+                    custom_group_definitions,
+                    single_label=custom_group_label,
+                    single_codes=custom_group_codes,
+                ),
+                hide_grouped_codes=hide_grouped_codes,
+                weight_col=weight_col,
+            )
+        else:
+            if row_var in {"", "(none)"}:
+                return JSONResponse({"error": "Select a row variable."}, status_code=400)
+            
+            if compare_concepts:
+                concept_detection = job.get("concept_detection") or {}
+                concept_group = (concept_detection.get("member_to_group") or {}).get(row_var)
+                if concept_group is None:
+                    return JSONResponse({
+                        "error": "Concept comparison is only available when the selected row variable belongs to a detected concept family."
+                    }, status_code=400)
+                result = tabulate_sr_concept_comparison(
+                    df,
+                    bundle=mapping_bundle,
+                    concept_group=concept_group,
+                    top_banner_var=None if col_var == "(none)" else col_var,
+                    include_totals=include_totals,
+                    include_base=include_base,
+                    out_counts=include_counts,
+                    out_rowpct=include_row_pct,
+                    out_colpct=include_col_pct,
+                    show_row_codes=show_row_codes,
+                    row_sort_mode=row_sort_mode,
+                    include_top2_box=include_top2_box,
+                    include_bottom2_box=include_bottom2_box,
+                    custom_group_label=custom_group_label,
+                    custom_group_codes=custom_group_codes,
+                    custom_groups=_parse_custom_group_definitions(
+                        custom_group_definitions,
+                        single_label=custom_group_label,
+                        single_codes=custom_group_codes,
+                    ),
+                    hide_grouped_codes=hide_grouped_codes,
+                    weight_col=weight_col,
+                )
+            else:
+                result = tabulate_sr(
+                    df,
+                    bundle=mapping_bundle,
+                    row_var=row_var,
+                    col_var=col_var,
+                    col_var2=None if col_var in {"", "(none)"} or col_var2 == "(none)" else col_var2,
+                    include_totals=include_totals, 
+                    include_base=include_base,
+                    out_counts=include_counts, 
+                    out_rowpct=include_row_pct, 
+                    out_colpct=include_col_pct,
+                    show_row_codes=show_row_codes,
+                    row_sort_mode=row_sort_mode,
+                    include_top2_box=include_top2_box,
+                    include_bottom2_box=include_bottom2_box,
+                    custom_group_label=custom_group_label,
+                    custom_group_codes=custom_group_codes,
+                    custom_groups=_parse_custom_group_definitions(
+                        custom_group_definitions,
+                        single_label=custom_group_label,
+                        single_codes=custom_group_codes,
+                    ),
+                    hide_grouped_codes=hide_grouped_codes,
+                    weight_col=weight_col,
+                )
+                result["row_var"] = row_var
+        
+        result["col_var"] = col_var
+        result["col_var2"] = col_var2
+        result["mode"] = qtype
+        result["weight_col"] = weight_col
+        result["show_row_codes"] = show_row_codes
+        result["include_top2_box"] = include_top2_box
+        result["include_bottom2_box"] = include_bottom2_box
+        result["custom_group_definitions"] = custom_group_definitions
+        result["custom_group_label"] = custom_group_label
+        result["row_sort_mode"] = row_sort_mode
+        
+        return JSONResponse(result)
+        
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)

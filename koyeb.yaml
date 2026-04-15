@@ -3,7 +3,7 @@ services:
   - name: web
     source:
       type: git
-      repository: https://github.com/yourusername/crosstab.git  # Replace with your GitHub repo
+      repository: https://github.com/ezdz2k-netizen/shiny-octo-winner.git
       branch: main
     build:
       builder: dockerfile

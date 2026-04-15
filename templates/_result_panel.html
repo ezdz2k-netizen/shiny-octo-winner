@@ -8,12 +8,28 @@
   {{ value if value|length <= limit else value[:limit - 3] ~ '...' }}
 {%- endmacro %}
 
+{% macro format_count(value, weighted=false) -%}
+  {%- if value is none -%}
+    {{ "" }}
+  {%- elif weighted -%}
+    {{ "%.2f"|format(value|float) }}
+  {%- else -%}
+    {{ (value|round(0))|int }}
+  {%- endif -%}
+{%- endmacro %}
+
 {% if result %}
   <div class="card">
     <div class="card-h">
       <h3>Preview</h3>
       <div class="muted">Mode: {{ "Multiple response" if result.mode=="mr" else "Single response" }} | Columns: {{ result.col_label_display or result.col_label }}</div>
       <div class="muted">Rows: {{ result.row_label_display or result.row_label }}</div>
+      {% if result.weight_col and result.weight_col != "(none)" %}
+        <div class="muted">Weight: {{ result.weight_col }}</div>
+      {% endif %}
+      {% if result.filter_active and result.filter_preview %}
+        <div class="muted">Filter: {{ result.filter_preview.human_readable }}</div>
+      {% endif %}
     </div>
 
     {% if job.last_saved_message %}
@@ -30,15 +46,7 @@
       </div>
     {% endif %}
 
-    {% if result.mapping_assumptions %}
-      <details class="preview-notes">
-        <summary>Ordering framework notes</summary>
-        {% for note in result.mapping_assumptions %}
-          <div class="muted">{{ note }}</div>
-        {% endfor %}
-      </details>
-    {% endif %}
-
+    
     {% for t in result.tables %}
       <h4 class="section">{{ "Counts" if t.kind=="counts" else ("Row %" if t.kind=="rowpct" else "Column %") }}</h4>
       <div class="table-wrap">
@@ -74,13 +82,15 @@
                   {% set v = base_row.get(c) %}
                   <th class="{% if c in t.get('special_count_columns', []) %}base-col {% endif %}{% if loop.index0 in t.header_layout.get('group_start_indices', []) %}group-divider{% endif %}">
                     {% if t.kind=='counts' %}
-                      {% if v is none %}{{ "" }}
-                      {% else %}{{ (v|round(0))|int }}
-                      {% endif %}
+                      {{ format_count(v, result.weight_col and result.weight_col != "(none)") }}
                     {% else %}
                       {% if v is none %}{% set _base_txt = "" %}
                       {% else %}
-                        {% set _base_txt = "%d"|format((v|round(0))|int) %}
+                        {% if result.weight_col and result.weight_col != "(none)" %}
+                          {% set _base_txt = "%.2f"|format(v|float) %}
+                        {% else %}
+                          {% set _base_txt = "%d"|format((v|round(0))|int) %}
+                        {% endif %}
                       {% endif %}
                       {{ _base_txt }}
                     {% endif %}
@@ -97,15 +107,21 @@
                   {% set v = r.get(c) %}
                   <td class="{% if c in t.get('special_count_columns', []) %}base-col {% endif %}{% if loop.index0 in t.header_layout.get('group_start_indices', []) %}group-divider{% endif %}">
                     {% if t.kind=='counts' %}
-                      {% if v is none %}{{ "" }}
-                      {% else %}{{ (v|round(0))|int }}
-                      {% endif %}
+                      {{ format_count(v, result.weight_col and result.weight_col != "(none)") }}
                     {% else %}
                       {% if v is none %}{% set _txt = "" %}
                       {% else %}
                         {% set _is_base_row = (r['__label__'] == 'Base') %}
                         {% set _is_base_col = (c in t.get('special_count_columns', [])) %}
-                        {% set _txt = "%d"|format((v|round(0))|int) %}
+                        {% if _is_base_row or _is_base_col %}
+                          {% if result.weight_col and result.weight_col != "(none)" %}
+                            {% set _txt = "%.2f"|format(v|float) %}
+                          {% else %}
+                            {% set _txt = "%d"|format((v|round(0))|int) %}
+                          {% endif %}
+                        {% else %}
+                          {% set _txt = "%d"|format((v|round(0))|int) %}
+                        {% endif %}
                         {% if pct_suffix and (t.kind in ['rowpct','colpct']) and (not _is_base_row) and (not _is_base_col) %}
                           {% set _txt = _txt ~ "%" %}
                         {% endif %}

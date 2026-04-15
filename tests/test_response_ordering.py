@@ -5,13 +5,17 @@ from pathlib import Path
 import pandas as pd
 
 from app.main import (
+    _parse_custom_group_definitions,
     _build_question_mappings_from_codebook,
     _build_question_mappings,
+    _filter_logic_warnings,
+    apply_filters_to_dataframe,
     detect_concept_groups,
     _normalize_response_value,
     _mr_display_metadata,
     _transpose_result,
     _resolve_uploaded_workbook_roles,
+    generate_filter_preview,
     load_mapping,
     detect_mr_groups,
     tabulate_mr,
@@ -182,6 +186,155 @@ class ResponseOrderingTests(unittest.TestCase):
         )
         self.assertEqual(result["tables"][0]["columns"], ["Twenty", "Forty", "Sixty"])
 
+    def test_tabulate_sr_uses_weighted_counts_and_bases(self) -> None:
+        weighted_df = self.value_df.copy()
+        weighted_df["Weight"] = [1.5, 0.5, 2.0, 1.0]
+        result = tabulate_sr(
+            weighted_df,
+            bundle=self.bundle,
+            row_var="Q1",
+            col_var="Banner",
+            col_var2=None,
+            include_totals=True,
+            include_base=True,
+            out_counts=True,
+            out_rowpct=False,
+            out_colpct=False,
+            weight_col="Weight",
+        )
+        rows = result["tables"][0]["rows"]
+        self.assertEqual(rows[0]["__label__"], "Base")
+        self.assertEqual(rows[0]["Male"], 2.5)
+        self.assertEqual(rows[0]["Female"], 2.5)
+        self.assertEqual(rows[0]["Total"], 5.0)
+        self.assertEqual(rows[1]["__label__"], "Disagree")
+        self.assertEqual(rows[1]["Male"], 1.0)
+        self.assertEqual(rows[2]["Female"], 2.0)
+        self.assertEqual(result["weight_col"], "Weight")
+
+    def test_apply_filters_to_dataframe_keeps_matching_rows(self) -> None:
+        df = pd.DataFrame(
+            {
+                "Q1": [1, 2, 2, 3],
+                "Banner": [10, 20, 20, 10],
+            }
+        )
+        filtered = apply_filters_to_dataframe(
+            df,
+            {
+                "active": True,
+                "type": "quick",
+                "match_type": "all",
+                "conditions": [
+                    {"variable": "Q1", "operator": "=", "value": 2},
+                    {"variable": "Banner", "operator": "=", "value": 20},
+                ],
+            },
+        )
+        self.assertEqual(len(filtered), 2)
+        self.assertEqual(filtered["Q1"].tolist(), [2, 2])
+        self.assertEqual(filtered["Banner"].tolist(), [20, 20])
+
+    def test_apply_filters_to_dataframe_matches_numeric_codes_from_string_values(self) -> None:
+        df = pd.DataFrame(
+            {
+                "Seg1_Age": [1, 2, 3, 4, 5, 5, 6, 6, 6],
+            }
+        )
+        filtered = apply_filters_to_dataframe(
+            df,
+            {
+                "active": True,
+                "type": "advanced",
+                "groups": [
+                    {
+                        "operator": "OR",
+                        "conditions": [
+                            {"variable": "Seg1_Age", "operator": "=", "value": "6"},
+                            {"variable": "Seg1_Age", "operator": "=", "value": "5"},
+                        ],
+                    }
+                ],
+            },
+        )
+        self.assertEqual(filtered["Seg1_Age"].tolist(), [5, 5, 6, 6, 6])
+
+    def test_generate_filter_preview_returns_human_readable_summary(self) -> None:
+        preview = generate_filter_preview(
+            {
+                "active": True,
+                "type": "advanced",
+                "groups": [
+                    {
+                        "operator": "AND",
+                        "conditions": [
+                            {"variable": "Q1", "operator": "=", "value": "2"},
+                            {"variable": "Banner", "operator": "=", "value": "20"},
+                        ],
+                    },
+                    {
+                        "operator": "OR",
+                        "conditions": [
+                            {"variable": "Q1", "operator": "=", "value": "3"},
+                        ],
+                    },
+                ],
+            }
+        )
+        self.assertEqual(preview["human_readable"], "(Q1 = 2 AND Banner = 20) AND (Q1 = 3)")
+
+    def test_filter_logic_warnings_flags_impossible_and_on_single_response_values(self) -> None:
+        warnings = _filter_logic_warnings(
+            {
+                "active": True,
+                "type": "advanced",
+                "groups": [
+                    {
+                        "operator": "AND",
+                        "conditions": [
+                            {"variable": "Seg1_Age", "operator": "=", "value": "1"},
+                            {"variable": "Seg1_Age", "operator": "=", "value": "2"},
+                        ],
+                    }
+                ],
+            }
+        )
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("Seg1_Age", warnings[0])
+        self.assertIn("return 0 rows", warnings[0])
+
+    def test_tabulate_sr_with_no_column_variable_runs_as_total(self) -> None:
+        result = tabulate_sr(
+            self.value_df,
+            bundle=self.bundle,
+            row_var="Q1",
+            col_var="(none)",
+            col_var2=None,
+            include_totals=False,
+            include_base=True,
+            out_counts=True,
+            out_rowpct=False,
+            out_colpct=False,
+        )
+        self.assertEqual(result["tables"][0]["columns"], ["Total"])
+        self.assertEqual(result["tables"][0]["rows"][0]["Total"], 4)
+
+    def test_tabulate_sr_with_no_column_variable_and_totals_shows_single_total(self) -> None:
+        result = tabulate_sr(
+            self.value_df,
+            bundle=self.bundle,
+            row_var="Q1",
+            col_var="(none)",
+            col_var2=None,
+            include_totals=True,
+            include_base=True,
+            out_counts=True,
+            out_rowpct=False,
+            out_colpct=False,
+        )
+        self.assertEqual(result["tables"][0]["columns"], ["Total"])
+        self.assertEqual(result["tables"][0]["rows"][0], {"__label__": "Base", "Total": 4})
+
     def test_bottom2_box_is_added_for_ascending_sort(self) -> None:
         rich_text_df = pd.DataFrame(
             {
@@ -245,6 +398,117 @@ class ResponseOrderingTests(unittest.TestCase):
         rows = result["tables"][0]["rows"]
         self.assertEqual(rows[0]["__label__"], "Top 2 Box")
         self.assertEqual(rows[0]["Male"], 2)
+
+    def test_custom_group_row_combines_selected_codes(self) -> None:
+        rich_text_df = pd.DataFrame(
+            {
+                "Q1": ["Poor", "Average", "Good", "Excellent"],
+                "Banner": ["Male", "Male", "Female", "Female"],
+            }
+        )
+        rich_value_df = pd.DataFrame(
+            {
+                "Q1": [1, 2, 3, 4],
+                "Banner": [10, 10, 20, 20],
+            }
+        )
+        bundle = _build_question_mappings(rich_text_df, rich_value_df)
+        result = tabulate_sr(
+            rich_value_df,
+            bundle=bundle,
+            row_var="Q1",
+            col_var="Banner",
+            col_var2=None,
+            include_totals=True,
+            include_base=False,
+            out_counts=True,
+            out_rowpct=False,
+            out_colpct=False,
+            custom_group_label="Positive",
+            custom_group_codes=["3", "4"],
+        )
+        rows = result["tables"][0]["rows"]
+        self.assertEqual(rows[0]["__label__"], "Positive")
+        self.assertEqual(rows[0]["Female"], 2)
+        self.assertEqual(rows[0]["Male"], 0)
+        self.assertEqual(rows[0]["Total"], 2)
+
+    def test_multiple_custom_group_rows_are_added_in_definition_order(self) -> None:
+        rich_text_df = pd.DataFrame(
+            {
+                "Q1": ["Poor", "Average", "Good", "Excellent"],
+                "Banner": ["Male", "Male", "Female", "Female"],
+            }
+        )
+        rich_value_df = pd.DataFrame(
+            {
+                "Q1": [1, 2, 3, 4],
+                "Banner": [10, 10, 20, 20],
+            }
+        )
+        bundle = _build_question_mappings(rich_text_df, rich_value_df)
+        result = tabulate_sr(
+            rich_value_df,
+            bundle=bundle,
+            row_var="Q1",
+            col_var="Banner",
+            col_var2=None,
+            include_totals=True,
+            include_base=False,
+            out_counts=True,
+            out_rowpct=False,
+            out_colpct=False,
+            custom_groups=[
+                {"label": "Positive", "codes": ["3", "4"]},
+                {"label": "Negative", "codes": ["1", "2"]},
+            ],
+        )
+        rows = result["tables"][0]["rows"]
+        self.assertEqual(rows[0]["__label__"], "Positive")
+        self.assertEqual(rows[0]["Female"], 2)
+        self.assertEqual(rows[1]["__label__"], "Negative")
+        self.assertEqual(rows[1]["Male"], 2)
+
+    def test_hide_grouped_codes_removes_source_rows_from_output(self) -> None:
+        rich_text_df = pd.DataFrame(
+            {
+                "Q1": ["Poor", "Average", "Good", "Excellent"],
+                "Banner": ["Male", "Male", "Female", "Female"],
+            }
+        )
+        rich_value_df = pd.DataFrame(
+            {
+                "Q1": [1, 2, 3, 4],
+                "Banner": [10, 10, 20, 20],
+            }
+        )
+        bundle = _build_question_mappings(rich_text_df, rich_value_df)
+        result = tabulate_sr(
+            rich_value_df,
+            bundle=bundle,
+            row_var="Q1",
+            col_var="Banner",
+            col_var2=None,
+            include_totals=False,
+            include_base=False,
+            out_counts=True,
+            out_rowpct=False,
+            out_colpct=False,
+            custom_groups=[{"label": "Negative", "codes": ["1", "2"]}],
+            hide_grouped_codes=True,
+        )
+        labels = [row["__label__"] for row in result["tables"][0]["rows"]]
+        self.assertEqual(labels, ["Negative", "Good", "Excellent"])
+
+    def test_parse_custom_group_definitions_supports_multiline_format(self) -> None:
+        parsed = _parse_custom_group_definitions("Positive = 4,5\nNegative = 1|2")
+        self.assertEqual(
+            parsed,
+            [
+                {"label": "Positive", "codes": ["4", "5"]},
+                {"label": "Negative", "codes": ["1", "2"]},
+            ],
+        )
 
     def test_numeric_code_sort_falls_back_for_non_numeric_codes(self) -> None:
         text_df = pd.DataFrame(
@@ -586,6 +850,289 @@ class ResponseOrderingTests(unittest.TestCase):
         )
         labels = [row["__label__"] for row in result["tables"][0]["rows"]]
         self.assertEqual(labels, ["Advertising Agency", "Grocery stores"])
+
+    def test_tabulate_mr_uses_weighted_counts_and_bases(self) -> None:
+        text_df = pd.DataFrame(
+            {
+                "Q4: Work industry | Advertising Agency": ["Checked", "", "Checked"],
+                "Q4: Work industry | Grocery stores": ["Checked", "Checked", ""],
+                "Banner": ["Male", "Female", "Male"],
+                "Weight": [1.5, 0.5, 2.0],
+            }
+        )
+        value_df = pd.DataFrame(
+            {
+                "Q4: Work industry | Advertising Agency": [1, 0, 1],
+                "Q4: Work industry | Grocery stores": [1, 1, 0],
+                "Banner": [1, 2, 1],
+                "Weight": [1.5, 0.5, 2.0],
+            }
+        )
+        bundle = _build_question_mappings(text_df, value_df)
+        mr_detection = detect_mr_groups(value_df)
+        result = tabulate_mr(
+            value_df,
+            bundle=bundle,
+            mr_cols=[
+                "Q4: Work industry | Advertising Agency",
+                "Q4: Work industry | Grocery stores",
+            ],
+            col_var="Banner",
+            col_var2=None,
+            include_totals=True,
+            include_base=True,
+            out_counts=True,
+            out_rowpct=False,
+            out_colpct=False,
+            mr_detection=mr_detection,
+            weight_col="Weight",
+        )
+        rows = result["tables"][0]["rows"]
+        self.assertEqual(rows[0]["__label__"], "Base")
+        self.assertEqual(rows[0]["Male"], 3.5)
+        self.assertEqual(rows[0]["Female"], 0.5)
+        self.assertEqual(rows[0]["Total"], 4.0)
+        self.assertEqual(rows[1]["Male"], 3.5)
+        self.assertEqual(rows[2]["Female"], 0.5)
+        self.assertEqual(result["weight_col"], "Weight")
+
+    def test_mr_custom_group_combines_selected_options(self) -> None:
+        text_df = pd.DataFrame(
+            {
+                "Q4: Work industry | Advertising Agency": ["Checked", "", "Checked"],
+                "Q4: Work industry | Grocery stores": ["Checked", "Checked", ""],
+                "Banner": ["Male", "Female", "Male"],
+            }
+        )
+        value_df = pd.DataFrame(
+            {
+                "Q4: Work industry | Advertising Agency": [1, 0, 1],
+                "Q4: Work industry | Grocery stores": [1, 1, 0],
+                "Banner": [1, 2, 1],
+            }
+        )
+        bundle = _build_question_mappings(text_df, value_df)
+        mr_detection = detect_mr_groups(value_df)
+        result = tabulate_mr(
+            value_df,
+            bundle=bundle,
+            mr_cols=[
+                "Q4: Work industry | Advertising Agency",
+                "Q4: Work industry | Grocery stores",
+            ],
+            col_var="Banner",
+            col_var2=None,
+            include_totals=False,
+            include_base=False,
+            out_counts=True,
+            out_rowpct=False,
+            out_colpct=False,
+            mr_detection=mr_detection,
+            custom_groups=[
+                {
+                    "label": "Retail + Agency",
+                    "codes": [
+                        "Q4: Work industry | Advertising Agency",
+                        "Q4: Work industry | Grocery stores",
+                    ],
+                }
+            ],
+        )
+        labels = [row["__label__"] for row in result["tables"][0]["rows"]]
+        self.assertEqual(labels[0], "Retail + Agency")
+        self.assertEqual(result["tables"][0]["rows"][0]["Male"], 2)
+        self.assertEqual(result["tables"][0]["rows"][0]["Female"], 1)
+
+    def test_mr_base_uses_unique_respondent_count_not_selection_sum(self) -> None:
+        text_df = pd.DataFrame(
+            {
+                "Q4: Work industry | Advertising Agency": ["Checked", "Checked", ""],
+                "Q4: Work industry | Grocery stores": ["Checked", "", "Checked"],
+                "Banner": ["Male", "Male", "Female"],
+            }
+        )
+        value_df = pd.DataFrame(
+            {
+                "Q4: Work industry | Advertising Agency": [1, 1, 0],
+                "Q4: Work industry | Grocery stores": [1, 0, 1],
+                "Banner": [1, 1, 2],
+            }
+        )
+        bundle = _build_question_mappings(text_df, value_df)
+        mr_detection = detect_mr_groups(value_df)
+        result = tabulate_mr(
+            value_df,
+            bundle=bundle,
+            mr_cols=[
+                "Q4: Work industry | Advertising Agency",
+                "Q4: Work industry | Grocery stores",
+            ],
+            col_var="Banner",
+            col_var2=None,
+            include_totals=True,
+            include_base=True,
+            out_counts=True,
+            out_rowpct=False,
+            out_colpct=False,
+            mr_detection=mr_detection,
+        )
+        base_row = result["tables"][0]["rows"][0]
+        self.assertEqual(base_row["__label__"], "Base")
+        self.assertEqual(base_row["Male"], 2)
+        self.assertEqual(base_row["Female"], 1)
+        self.assertEqual(base_row["Total"], 3)
+
+    def test_mr_colpct_uses_unique_respondent_base(self) -> None:
+        text_df = pd.DataFrame(
+            {
+                "Q4: Work industry | Advertising Agency": ["Checked", "Checked", ""],
+                "Q4: Work industry | Grocery stores": ["Checked", "", "Checked"],
+                "Banner": ["Male", "Male", "Female"],
+            }
+        )
+        value_df = pd.DataFrame(
+            {
+                "Q4: Work industry | Advertising Agency": [1, 1, 0],
+                "Q4: Work industry | Grocery stores": [1, 0, 1],
+                "Banner": [1, 1, 2],
+            }
+        )
+        bundle = _build_question_mappings(text_df, value_df)
+        mr_detection = detect_mr_groups(value_df)
+        result = tabulate_mr(
+            value_df,
+            bundle=bundle,
+            mr_cols=[
+                "Q4: Work industry | Advertising Agency",
+                "Q4: Work industry | Grocery stores",
+            ],
+            col_var="Banner",
+            col_var2=None,
+            include_totals=True,
+            include_base=True,
+            out_counts=False,
+            out_rowpct=False,
+            out_colpct=True,
+            mr_detection=mr_detection,
+        )
+        advertising_row = result["tables"][0]["rows"][1]
+        self.assertEqual(advertising_row["__label__"], "Advertising Agency")
+        self.assertEqual(advertising_row["Male"], 100.0)
+        self.assertEqual(advertising_row["Female"], 0.0)
+
+    def test_tabulate_mr_with_no_column_variable_runs_as_total(self) -> None:
+        text_df = pd.DataFrame(
+            {
+                "Q4: Work industry | Advertising Agency": ["Checked", "", "Checked"],
+                "Q4: Work industry | Grocery stores": ["Checked", "Checked", ""],
+            }
+        )
+        value_df = pd.DataFrame(
+            {
+                "Q4: Work industry | Advertising Agency": [1, 0, 1],
+                "Q4: Work industry | Grocery stores": [1, 1, 0],
+            }
+        )
+        bundle = _build_question_mappings(text_df, value_df)
+        mr_detection = detect_mr_groups(value_df)
+        result = tabulate_mr(
+            value_df,
+            bundle=bundle,
+            mr_cols=[
+                "Q4: Work industry | Advertising Agency",
+                "Q4: Work industry | Grocery stores",
+            ],
+            col_var="(none)",
+            col_var2=None,
+            include_totals=False,
+            include_base=True,
+            out_counts=True,
+            out_rowpct=False,
+            out_colpct=False,
+            mr_detection=mr_detection,
+        )
+        self.assertEqual(result["tables"][0]["columns"], ["Total"])
+        self.assertEqual(result["tables"][0]["rows"][0]["Total"], 3)
+
+    def test_tabulate_mr_with_no_column_variable_and_totals_shows_single_total(self) -> None:
+        text_df = pd.DataFrame(
+            {
+                "Q4: Work industry | Advertising Agency": ["Checked", "", "Checked"],
+                "Q4: Work industry | Grocery stores": ["Checked", "Checked", ""],
+            }
+        )
+        value_df = pd.DataFrame(
+            {
+                "Q4: Work industry | Advertising Agency": [1, 0, 1],
+                "Q4: Work industry | Grocery stores": [1, 1, 0],
+            }
+        )
+        bundle = _build_question_mappings(text_df, value_df)
+        mr_detection = detect_mr_groups(value_df)
+        result = tabulate_mr(
+            value_df,
+            bundle=bundle,
+            mr_cols=[
+                "Q4: Work industry | Advertising Agency",
+                "Q4: Work industry | Grocery stores",
+            ],
+            col_var="(none)",
+            col_var2=None,
+            include_totals=True,
+            include_base=True,
+            out_counts=True,
+            out_rowpct=False,
+            out_colpct=False,
+            mr_detection=mr_detection,
+        )
+        self.assertEqual(result["tables"][0]["columns"], ["Total"])
+        self.assertEqual(result["tables"][0]["rows"][0], {"__label__": "Base", "Total": 3})
+
+    def test_mr_hide_grouped_codes_removes_source_options(self) -> None:
+        text_df = pd.DataFrame(
+            {
+                "Q4: Work industry | Advertising Agency": ["Checked", "", "Checked"],
+                "Q4: Work industry | Grocery stores": ["", "Checked", ""],
+                "Banner": ["Male", "Female", "Male"],
+            }
+        )
+        value_df = pd.DataFrame(
+            {
+                "Q4: Work industry | Advertising Agency": [1, 0, 1],
+                "Q4: Work industry | Grocery stores": [0, 1, 0],
+                "Banner": [1, 2, 1],
+            }
+        )
+        bundle = _build_question_mappings(text_df, value_df)
+        mr_detection = detect_mr_groups(value_df)
+        result = tabulate_mr(
+            value_df,
+            bundle=bundle,
+            mr_cols=[
+                "Q4: Work industry | Advertising Agency",
+                "Q4: Work industry | Grocery stores",
+            ],
+            col_var="Banner",
+            col_var2=None,
+            include_totals=False,
+            include_base=False,
+            out_counts=True,
+            out_rowpct=False,
+            out_colpct=False,
+            mr_detection=mr_detection,
+            custom_groups=[
+                {
+                    "label": "Retail + Agency",
+                    "codes": [
+                        "Q4: Work industry | Advertising Agency",
+                        "Q4: Work industry | Grocery stores",
+                    ],
+                }
+            ],
+            hide_grouped_codes=True,
+        )
+        labels = [row["__label__"] for row in result["tables"][0]["rows"]]
+        self.assertEqual(labels, ["Retail + Agency"])
 
     def test_codebook_mapping_preserves_explicit_order(self) -> None:
         codebook_df = pd.DataFrame(

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>{{ title }}</title>
+  <title>{{ title }}{% if version %} {{ version }}{% endif %}</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/static/app.css" />
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
@@ -376,6 +376,9 @@
     <div class="container shell-head">
       <div class="brand">
         <div class="brand-title">{{ title }}</div>
+        {% if version %}
+          <div class="brand-version">{{ version }}</div>
+        {% endif %}
         <div class="brand-sub">Build crosstabs from Toluna Analytics value and label exports.</div>
       </div>
     </div>

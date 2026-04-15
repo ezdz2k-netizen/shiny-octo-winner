@@ -51,13 +51,13 @@
         </div>
 
         <div class="field field-span-2" data-mr-only data-display="block" hidden>
-          <label>MR columns</label>
+          <label>Multiple Response Variables</label>
           <select name="mr_cols" multiple size="8" class="mono" title="">
             {% for group in job.mr_detection.mr_groups %}
               <optgroup label="{{ group.stem }}">
                 {% for column in group.columns %}
                   {% set option_idx = loop.index0 %}
-                  <option value="{{ column }}" title="{{ column }}">{{ short_label(group.options[option_idx]) }}</option>
+                  <option value="{{ column }}" title="{{ column }}" data-group-token="{{ group.options[option_idx] }}">{{ short_label(group.options[option_idx]) }}</option>
                 {% endfor %}
               </optgroup>
             {% endfor %}
@@ -65,7 +65,7 @@
               <optgroup label="Other binary columns">
                 {% for c in job.mr_detection.non_mr_columns %}
                   {% if c in job.dich_cols %}
-                    <option value="{{ c }}" title="{{ c }}">{{ short_label(c) }}</option>
+                    <option value="{{ c }}" title="{{ c }}" data-group-token="{{ c }}">{{ short_label(c) }}</option>
                   {% endif %}
                 {% endfor %}
               </optgroup>
@@ -89,12 +89,13 @@
         <div class="field" data-sr-only data-display="block">
           <label>Row variable</label>
           <select name="row_var" title="">
+            <option value="(none)" selected>(none)</option>
             {% for c in job.columns %}
               {% set concept_group = job.concept_detection.member_to_group.get(c) if job.concept_detection and job.concept_detection.member_to_group else none %}
               <option value="{{ c }}"
                       title="{{ c }}"
                       data-concept-family="{{ concept_group.family_key if concept_group else '' }}"
-                      data-concept-label="{{ concept_group.label if concept_group else '' }}">{{ short_label(c) }}</option>
+                      data-concept-label="{{ concept_group.label if concept_group else '' }}">{{ short_label(job.column_display_labels.get(c, c)) }}</option>
             {% endfor %}
           </select>
           {% set concept_groups = job.concept_detection.concept_groups if job.concept_detection else [] %}
@@ -114,6 +115,16 @@
         <div class="swap-inline" data-sr-only data-display="flex">
           <button type="button" class="btn" data-swap-row-col>Swap Row / Column</button>
           <p class="help">Use this when you want to flip the same two variables quickly.</p>
+          <div class="field swap-weight-field">
+            <label>Weights</label>
+            <select name="weight_col" title="">
+              <option value="(none)" selected>(none)</option>
+              {% for c in job.columns %}
+                <option value="{{ c }}" title="{{ c }}">{{ short_label(job.column_display_labels.get(c, c)) }}</option>
+              {% endfor %}
+            </select>
+            <p class="help">Optional. Weighted counts and bases may be fractional.</p>
+          </div>
         </div>
 
         <div class="field column-stack">
@@ -122,7 +133,7 @@
             <select name="col_var" required title="" data-column-select="primary">
               <option value="(none)" selected>(none)</option>
               {% for c in job.columns %}
-                <option value="{{ c }}" title="{{ c }}">{{ short_label(c) }}</option>
+                <option value="{{ c }}" title="{{ c }}">{{ short_label(job.column_display_labels.get(c, c)) }}</option>
               {% endfor %}
             </select>
             <p class="help" data-col-var1-help>Choose the main banner variable. In concept comparison mode, this is optional and becomes the top banner if selected.</p>
@@ -133,7 +144,7 @@
             <select name="col_var2" title="" data-column-select="secondary">
               <option value="(none)" selected>(none)</option>
               {% for c in job.columns %}
-                <option value="{{ c }}" title="{{ c }}">{{ short_label(c) }}</option>
+                <option value="{{ c }}" title="{{ c }}">{{ short_label(job.column_display_labels.get(c, c)) }}</option>
               {% endfor %}
             </select>
             <p class="help" data-col-var2-help>Layer 2 appears as a child header under Layer 1 in preview and export.</p>
@@ -183,6 +194,91 @@
             <option value="code_desc">Raw code descending</option>
           </select>
         </div>
+
+      </div>
+    </section>
+
+    <section class="setup-card custom-group-section" data-display="block">
+      <div class="setup-card-head">
+        <div class="step-badge">4</div>
+        <div>
+          <h3>Custom Groups</h3>
+          <p class="muted">Optional grouped rows for the current row variable. Use the full space here when you need extra rollups.</p>
+        </div>
+        <div class="pill custom-group-count" data-custom-group-summary>No groups added</div>
+      </div>
+      <input type="hidden" name="custom_group_definitions" data-custom-group-definitions />
+      <input type="hidden" name="filter_data" data-filter-data />
+      <div class="custom-group-layout" data-custom-group-panel>
+        <div class="custom-group-workspace" data-custom-group-builder>
+          <div class="custom-group-toolbar">
+            <div>
+              <div class="option-card-title">Grouped rows</div>
+              <p class="help">Type a label and comma-separated codes, then add it to the list.</p>
+            </div>
+          </div>
+          <div class="custom-group-entry">
+            <div class="field custom-group-label-field">
+              <label>Label</label>
+              <input type="text" placeholder="Example: Positive" data-custom-group-draft-label />
+              <div class="custom-group-picker-value custom-group-picker-placeholder" aria-hidden="true">&nbsp;</div>
+            </div>
+            <div class="field">
+              <label>Codes</label>
+              <button type="button" class="custom-group-picker-trigger" data-custom-group-picker-trigger>Select codes</button>
+              <div class="custom-group-picker-value muted" data-custom-group-picker-value>No codes selected</div>
+            </div>
+            <div class="custom-group-entry-action">
+              <button type="button" class="btn custom-group-add-btn" data-add-custom-group>Add</button>
+            </div>
+          </div>
+          <label class="custom-group-toggle">
+            <input type="checkbox" name="hide_grouped_codes" data-preview-autorefresh />
+            Hide grouped source codes from the table
+          </label>
+        </div>
+        <aside class="custom-group-side">
+          <div class="custom-group-reference" data-custom-group-reference>
+            <div class="option-card-title">Available Row Codes</div>
+            <p class="help">Use these as a quick lookup while typing codes.</p>
+            <div class="custom-group-reference-list muted" data-custom-group-reference-list>Pick a row variable to see available codes.</div>
+          </div>
+          <div class="custom-group-compiled">
+            <div class="option-card-title">Added Groups</div>
+            <div class="custom-group-list" data-custom-group-list></div>
+            <div class="custom-group-empty muted" data-custom-group-empty>No custom groups yet.</div>
+          </div>
+        </aside>
+      </div>
+      <div class="custom-group-picker-modal" data-custom-group-picker hidden>
+        <div class="custom-group-picker-dialog" role="dialog" aria-modal="true" aria-label="Select grouped codes">
+          <div class="custom-group-picker-head">
+            <strong>Select codes</strong>
+            <button type="button" class="custom-group-picker-close" data-custom-group-picker-close>x</button>
+          </div>
+          <input type="text" class="custom-group-picker-label-input" data-custom-group-picker-label-input placeholder="Group label" />
+          <p class="help custom-group-picker-help">Edit the label above to rename this group</p>
+          <select multiple size="10" class="mono custom-group-picker-select" data-custom-group-picker-select></select>
+          <div class="custom-group-picker-actions">
+            <button type="button" class="btn custom-group-add-btn" data-custom-group-picker-done>Done</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="setup-card">
+      <div class="setup-card-head">
+        <div class="step-badge">5</div>
+        <div>
+          <h3>Filters</h3>
+          <p class="muted">Optionally limit the respondents included in the preview and export.</p>
+        </div>
+      </div>
+
+      <div class="filter-compact">
+        <div class="filter-display" data-filter-display>No filters applied.</div>
+        <button type="button" class="btn btn-small" data-open-filter-modal>Add Filter</button>
+        <button type="button" class="btn btn-small btn-danger" data-clear-filter>Clear</button>
       </div>
     </section>
 
@@ -209,6 +305,67 @@
   </div>
 </div>
 
+<div class="filter-modal-backdrop" data-filter-modal-backdrop hidden style="display:none;">
+  <div class="filter-modal" role="dialog" aria-modal="true" aria-label="Data filters">
+    <div class="filter-modal-head">
+      <h3>Data Filters</h3>
+      <button type="button" class="btn btn-small" data-close-filter-modal>Close</button>
+    </div>
+    <div class="filter-modal-form">
+      <div class="checks checks-compact" style="margin-bottom:12px;">
+        <label><input type="radio" name="filter_mode" value="quick" data-filter-mode checked> Quick Filter</label>
+        <label><input type="radio" name="filter_mode" value="advanced" data-filter-mode> Advanced Filter</label>
+      </div>
+
+      <div data-filter-quick-mode>
+        <div class="field" style="margin-bottom:12px;max-width:220px;">
+          <label>Match</label>
+          <select data-filter-quick-match>
+            <option value="all">All conditions</option>
+            <option value="any">Any condition</option>
+          </select>
+        </div>
+        <div class="filter-groups" data-filter-quick-conditions></div>
+        <div class="filter-modal-actions" style="justify-content:flex-start;">
+          <button type="button" class="btn btn-small" data-add-quick-filter>+ Add Condition</button>
+        </div>
+      </div>
+
+      <div data-filter-advanced-mode hidden>
+        <div class="filter-groups" data-filter-advanced-groups></div>
+        <div class="filter-modal-actions" style="justify-content:flex-start;">
+          <button type="button" class="btn btn-small" data-add-advanced-group="AND">+ Add AND Group</button>
+          <button type="button" class="btn btn-small" data-add-advanced-group="OR">+ Add OR Group</button>
+        </div>
+      </div>
+
+      <div class="filter-logic-preview">
+        <div class="option-card-title" style="margin-bottom:6px;">Preview</div>
+        <div class="filter-logic-text" data-filter-preview-text>No filters applied.</div>
+      </div>
+
+      <div class="filter-modal-actions">
+        <button type="button" class="btn btn-small" data-apply-filter>Apply Filter</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="custom-group-picker" data-filter-value-picker hidden style="display:none;">
+  <div class="custom-group-picker-dialog" role="dialog" aria-modal="true" aria-label="Select filter value">
+    <div class="custom-group-picker-head">
+      <strong>Select value</strong>
+      <button type="button" class="custom-group-picker-close" data-filter-value-picker-close>x</button>
+    </div>
+    <input type="text" class="custom-group-picker-label-input" data-filter-value-picker-variable readonly />
+    <p class="help custom-group-picker-help">Choose one response for this filter condition.</p>
+    <select size="10" class="mono custom-group-picker-select" data-filter-value-picker-select></select>
+    <div class="custom-group-picker-actions">
+      <button type="button" class="btn custom-group-add-btn" data-filter-value-picker-done>Done</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (() => {
   const forms = document.querySelectorAll('form[hx-post="/run"]');
@@ -218,6 +375,7 @@
   const swapBtn = form.querySelector("[data-swap-row-col]");
   const swapWrap = swapBtn ? swapBtn.closest(".swap-inline") : null;
   const rowSelect = form.querySelector('select[name="row_var"]');
+  const mrColsSelect = form.querySelector('select[name="mr_cols"]');
   const colSelect = form.querySelector('select[name="col_var"]');
   const colSelect2 = form.querySelector('select[name="col_var2"]');
   const qtypeSelect = form.querySelector("[data-qtype-select]");
@@ -225,8 +383,47 @@
   const conceptHelp = form.querySelector("[data-concept-help]");
   const colVar1Help = form.querySelector("[data-col-var1-help]");
   const colVar2Help = form.querySelector("[data-col-var2-help]");
+  const customGroupPanel = form.querySelector("[data-custom-group-panel]");
+  const customGroupSummary = form.querySelector("[data-custom-group-summary]");
+  const customGroupDefinitionsInput = form.querySelector("[data-custom-group-definitions]");
+  const customGroupBuilder = form.querySelector("[data-custom-group-builder]");
+  const customGroupList = form.querySelector("[data-custom-group-list]");
+  const customGroupEmpty = form.querySelector("[data-custom-group-empty]");
+  const customGroupReferenceList = form.querySelector("[data-custom-group-reference-list]");
+  const customGroupDraftLabel = form.querySelector("[data-custom-group-draft-label]");
+  const customGroupPickerTrigger = form.querySelector("[data-custom-group-picker-trigger]");
+  const customGroupPickerValue = form.querySelector("[data-custom-group-picker-value]");
+  const customGroupPicker = form.querySelector("[data-custom-group-picker]");
+  const customGroupPickerSelect = form.querySelector("[data-custom-group-picker-select]");
+  const customGroupPickerClose = form.querySelector("[data-custom-group-picker-close]");
+  const customGroupPickerDone = form.querySelector("[data-custom-group-picker-done]");
+  const customGroupPickerLabelInput = form.querySelector("[data-custom-group-picker-label-input]");
+  const addCustomGroupBtn = form.querySelector("[data-add-custom-group]");
+  const filterDataInput = form.querySelector("[data-filter-data]");
+  const filterDisplay = form.querySelector("[data-filter-display]");
+  const filterOpenButton = form.querySelector("[data-open-filter-modal]");
+  const filterClearButton = form.querySelector("[data-clear-filter]");
+  const filterModalBackdrop = document.querySelector("[data-filter-modal-backdrop]");
+  const filterValuePicker = document.querySelector("[data-filter-value-picker]");
+  const filterValuePickerVariable = filterValuePicker?.querySelector("[data-filter-value-picker-variable]");
+  const filterValuePickerSelect = filterValuePicker?.querySelector("[data-filter-value-picker-select]");
+  const filterPreviewText = filterModalBackdrop?.querySelector("[data-filter-preview-text]");
+  const filterQuickMode = filterModalBackdrop?.querySelector("[data-filter-quick-mode]");
+  const filterAdvancedMode = filterModalBackdrop?.querySelector("[data-filter-advanced-mode]");
+  const filterQuickMatch = filterModalBackdrop?.querySelector("[data-filter-quick-match]");
+  const filterQuickConditions = filterModalBackdrop?.querySelector("[data-filter-quick-conditions]");
+  const filterAdvancedGroups = filterModalBackdrop?.querySelector("[data-filter-advanced-groups]");
+  const filterModeRadios = Array.from(filterModalBackdrop?.querySelectorAll("[data-filter-mode]") || []);
+  let activeFilterValueCondition = null;
+  let editingCustomGroupRow = null;
+  const filterVariables = {{ job.columns|tojson }};
+  const filterVariableLabels = {{ job.column_display_labels|tojson }};
+  const groupableQuestionOptions = {{ job.groupable_question_options|tojson }};
+  const filterColumnCodes = {{ job.column_codes|tojson }};
+  const filterValueOptionsByVariable = {{ (job.filter_value_options|default({}, true))|tojson }};
   const previewAutoRefreshFields = Array.from(form.querySelectorAll("[data-preview-autorefresh]"));
   let previewRefreshTimer = null;
+  let currentFilter = { active: false, type: "quick", conditions: [], match_type: "all", groups: [] };
   const srOnlySections = Array.from(form.querySelectorAll("[data-sr-only]"));
   const mrOnlySections = Array.from(form.querySelectorAll("[data-mr-only]"));
   const columnSelects = Array.from(form.querySelectorAll("[data-column-select]"));
@@ -366,6 +563,254 @@
     }
   };
 
+  const normalizeKey = (value) => String(value || "").trim().toLowerCase();
+  const compareCustomGroupCodes = (left, right) => {
+    const leftText = String(left || "").trim();
+    const rightText = String(right || "").trim();
+    const leftNumber = Number(leftText);
+    const rightNumber = Number(rightText);
+    const leftIsNumber = leftText !== "" && Number.isFinite(leftNumber);
+    const rightIsNumber = rightText !== "" && Number.isFinite(rightNumber);
+    if (leftIsNumber && rightIsNumber) {
+      return leftNumber - rightNumber;
+    }
+    if (leftIsNumber) return -1;
+    if (rightIsNumber) return 1;
+    return leftText.localeCompare(rightText, undefined, { numeric: true, sensitivity: "base" });
+  };
+
+  const availableCustomGroupOptions = () => {
+    const isMR = qtypeSelect && qtypeSelect.value === "mr";
+    const options = isMR
+      ? Array.from(mrColsSelect?.selectedOptions || []).map((option) => ({
+        value: String(option.value || "").trim(),
+        token: String(option.dataset.groupToken || option.textContent || "").trim(),
+        reference: String(option.dataset.groupToken || option.textContent || "").trim(),
+      }))
+      : (() => {
+          const rowQuestion = rowSelect ? rowSelect.value : "";
+          return (Array.isArray(groupableQuestionOptions[rowQuestion]) ? groupableQuestionOptions[rowQuestion] : []).map((item) => ({
+            value: String(item.code || "").trim(),
+            token: item.label ? `${item.code} - ${item.label}` : String(item.code || "").trim(),
+            reference: item.label ? `${item.code} - ${item.label}` : String(item.code || "").trim(),
+          }));
+        })();
+    return options
+      .filter((item) => item.value)
+      .sort((left, right) => compareCustomGroupCodes(left.value, right.value));
+  };
+
+  const getSelectedPickerValues = () => Array.from(customGroupPickerSelect?.selectedOptions || []).map((option) => option.value).filter(Boolean);
+
+  const syncCustomGroupPickerLabel = () => {
+    if (!customGroupPickerValue) return;
+    const chosen = Array.from(customGroupPickerSelect?.selectedOptions || []).map((option) => option.textContent || option.value).filter(Boolean);
+    customGroupPickerValue.textContent = chosen.length ? chosen.join(" | ") : "No codes selected";
+  };
+
+  const fillCustomGroupPickerOptions = (selectedValues = []) => {
+    const options = availableCustomGroupOptions();
+    const selected = new Set(selectedValues.map((value) => String(value)));
+    if (customGroupPickerSelect) {
+      customGroupPickerSelect.innerHTML = "";
+      options.forEach((item) => {
+        const option = document.createElement("option");
+        option.value = item.value;
+        option.textContent = item.token;
+        option.selected = selected.has(String(item.value));
+        customGroupPickerSelect.appendChild(option);
+      });
+    }
+    syncCustomGroupPickerLabel();
+  };
+
+  const resolveCustomGroupCodes = (rawValues) => {
+    const wantedTokens = Array.isArray(rawValues)
+      ? rawValues.map((value) => String(value).trim()).filter(Boolean)
+      : String(rawValues || "").split(",").map((value) => value.trim()).filter(Boolean);
+    const options = availableCustomGroupOptions();
+    const byValue = new Map(options.map((item) => [normalizeKey(item.value), item]));
+    const byToken = new Map(options.map((item) => [normalizeKey(item.token), item]));
+    const resolvedValues = [];
+    const displayTokens = [];
+    wantedTokens.forEach((token) => {
+      const match = byValue.get(normalizeKey(token)) || byToken.get(normalizeKey(token));
+      if (match) {
+        resolvedValues.push(match.value);
+        displayTokens.push(match.token);
+      } else {
+        resolvedValues.push(token);
+        displayTokens.push(token);
+      }
+    });
+    const pairedValues = resolvedValues.map((value, index) => ({
+      value,
+      token: displayTokens[index] || value,
+    }));
+    pairedValues.sort((left, right) => compareCustomGroupCodes(left.value, right.value));
+    return {
+      resolvedValues: pairedValues.map((item) => item.value),
+      displayTokens: pairedValues.map((item) => item.token),
+    };
+  };
+
+  const serializeCustomGroups = () => {
+    if (!customGroupDefinitionsInput || !customGroupList) return;
+    const rows = Array.from(customGroupList.querySelectorAll("[data-custom-group-row]"));
+    const lines = rows.map((row) => {
+      const label = String(row.getAttribute("data-label") || "").trim();
+      const codes = String(row.getAttribute("data-codes") || "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+      return label && codes.length ? `${label} = ${codes.join(",")}` : "";
+    }).filter(Boolean);
+    customGroupDefinitionsInput.value = lines.join("\n");
+    if (customGroupEmpty) {
+      customGroupEmpty.hidden = rows.length > 0;
+    }
+    if (customGroupSummary) {
+      customGroupSummary.textContent = lines.length ? `${lines.length} group${lines.length === 1 ? "" : "s"}` : "No groups added";
+    }
+  };
+
+  const setCustomGroupRowContent = (row, config = {}) => {
+    if (!row) return;
+    const label = String(config.label || "").trim();
+    const internalCodes = Array.isArray(config.codes) ? config.codes : [];
+    const displayCodes = Array.isArray(config.displayCodes) ? config.displayCodes : internalCodes;
+    const codes = displayCodes.join(", ");
+    row.setAttribute("data-label", label);
+    row.setAttribute("data-codes", internalCodes.join(","));
+    row.setAttribute("data-display-codes", displayCodes.join(","));
+    const text = row.querySelector(".custom-group-row-text");
+    if (text) {
+      text.innerHTML = "";
+      const labelSpan = document.createElement("span");
+      labelSpan.className = "custom-group-row-label";
+      labelSpan.textContent = `${label}: `;
+      const codesSpan = document.createElement("span");
+      codesSpan.className = "custom-group-row-codes";
+      codesSpan.textContent = codes;
+      text.appendChild(labelSpan);
+      text.appendChild(codesSpan);
+    }
+  };
+
+  const resetCustomGroupDraft = () => {
+    editingCustomGroupRow = null;
+    fillCustomGroupPickerOptions([]);
+    if (customGroupPickerLabelInput) {
+      customGroupPickerLabelInput.value = "";
+    }
+    if (customGroupPicker) {
+      customGroupPicker.hidden = true;
+    }
+    if (addCustomGroupBtn) {
+      addCustomGroupBtn.textContent = "Add";
+    }
+  };
+
+  const createCustomGroupRow = (config = {}) => {
+    if (!customGroupList) return;
+    const row = document.createElement("div");
+    row.className = "custom-group-row";
+    row.setAttribute("data-custom-group-row", "");
+
+    const text = document.createElement("div");
+    text.className = "custom-group-row-text";
+
+    const editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.className = "custom-group-edit";
+    editBtn.textContent = "Edit";
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "custom-group-remove";
+    removeBtn.textContent = "x";
+
+    row.appendChild(text);
+    row.appendChild(editBtn);
+    row.appendChild(removeBtn);
+    customGroupList.appendChild(row);
+    setCustomGroupRowContent(row, config);
+    editBtn.addEventListener("click", () => {
+      const currentLabel = String(row.getAttribute("data-label") || "").trim();
+      const currentCodes = String(row.getAttribute("data-codes") || "").split(",").map((value) => value.trim()).filter(Boolean);
+      const currentDisplayCodes = String(row.getAttribute("data-display-codes") || "").split(",").map((value) => value.trim()).filter(Boolean);
+      if (customGroupDraftLabel) {
+        customGroupDraftLabel.value = currentLabel;
+      }
+      if (customGroupPickerLabelInput) {
+        customGroupPickerLabelInput.value = currentLabel;
+      }
+      fillCustomGroupPickerOptions(currentCodes);
+      if (customGroupPickerValue) {
+        customGroupPickerValue.textContent = currentDisplayCodes.length ? currentDisplayCodes.join(" | ") : "No codes selected";
+      }
+      if (customGroupPicker) {
+        customGroupPicker.hidden = true;
+      }
+      editingCustomGroupRow = row;
+      row.classList.add("is-editing");
+      if (addCustomGroupBtn) {
+        addCustomGroupBtn.textContent = "Update";
+      }
+    });
+    removeBtn.addEventListener("click", () => {
+      if (editingCustomGroupRow === row) {
+        resetCustomGroupDraft();
+      }
+      row.remove();
+      serializeCustomGroups();
+      requestPreviewRefresh();
+    });
+    return { row };
+  };
+
+  const parseDefinitionLines = (raw) => String(raw || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split("=");
+      if (parts.length < 2) return null;
+      const label = parts[0].trim();
+      const codes = parts.slice(1).join("=").split(",").map((value) => value.trim()).filter(Boolean);
+      return label && codes.length ? { label, codes } : null;
+    })
+    .filter(Boolean);
+
+  const syncCustomGroupBuilderRows = () => {
+    if (!customGroupBuilder || !customGroupList) return;
+    const options = availableCustomGroupOptions();
+    if (customGroupReferenceList) {
+      customGroupReferenceList.textContent = options.length
+        ? options.map((item) => item.reference).join(" | ")
+        : ((qtypeSelect && qtypeSelect.value === "mr")
+          ? "Select MR options first to make them available for grouping."
+          : "No mapped row codes are available for the selected row question.");
+    }
+    fillCustomGroupPickerOptions(getSelectedPickerValues());
+    serializeCustomGroups();
+  };
+
+  const syncCustomGroupOptions = () => {
+    const isMR = qtypeSelect && qtypeSelect.value === "mr";
+    const options = availableCustomGroupOptions();
+    if (addCustomGroupBtn) {
+      addCustomGroupBtn.disabled = Boolean(options.length === 0);
+    }
+    if (customGroupDraftLabel) {
+      customGroupDraftLabel.disabled = false;
+    }
+    if (customGroupPickerTrigger) {
+      customGroupPickerTrigger.disabled = Boolean(options.length === 0);
+    }
+    syncCustomGroupBuilderRows();
+  };
+
   const readPrefs = () => {
     try {
       const raw = window.localStorage.getItem(prefsKey);
@@ -415,12 +860,525 @@
     select.title = selected ? (selected.value || selected.textContent || "") : "";
   };
 
+  const openFilterModal = () => {
+    if (filterModalBackdrop) {
+      filterModalBackdrop.hidden = false;
+      filterModalBackdrop.style.display = "flex";
+    }
+  };
+
+  const closeFilterModal = () => {
+    closeFilterValuePicker();
+    if (filterModalBackdrop) {
+      filterModalBackdrop.hidden = true;
+      filterModalBackdrop.style.display = "none";
+    }
+  };
+
+  const getFilterVariableOptions = () => Array.from(rowSelect?.options || [])
+    .map((option) => String(option.value || ""))
+    .filter((value) => value && value !== "(none)");
+
+  const getAvailableFilterVariables = () => Array.isArray(filterVariables)
+    ? filterVariables.map((value) => String(value || "")).filter((value) => value)
+    : getFilterVariableOptions();
+
+  const findNormalizedFilterKey = (source, rawKey) => {
+    const normalized = String(rawKey || "").trim().toLowerCase();
+    if (!normalized) return "";
+    return Object.keys(source || {}).find((key) => String(key || "").trim().toLowerCase() === normalized) || "";
+  };
+
+  const getFilterVariableDisplayLabel = (variable) => {
+    const exact = String(variable || "");
+    const trimmed = exact.trim();
+    const normalizedKey = findNormalizedFilterKey(filterVariableLabels, exact);
+    return filterVariableLabels[exact] || filterVariableLabels[trimmed] || (normalizedKey ? filterVariableLabels[normalizedKey] : "") || exact;
+  };
+
+  const createFilterVariableOptionsMarkup = (selectedValue = "") => {
+    const selected = String(selectedValue || "");
+    return ['<option value="">Select variable...</option>']
+      .concat(getAvailableFilterVariables().map((value) => `<option value="${value}" title="${escapeHtml(value)}"${value === selected ? " selected" : ""}>${escapeHtml(getFilterVariableDisplayLabel(value))}</option>`))
+      .join("");
+  };
+
+  const escapeHtml = (value) => String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+  const shouldUseValueSelect = (options) => Array.isArray(options) && options.length > 0;
+
+  const getConditionValueOptions = (conditionEl) => {
+    try {
+      const raw = conditionEl?.dataset?.valueOptions || "[]";
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      return [];
+    }
+  };
+
+  const getFilterValueOptionsForVariable = (variable, fallbackOptions = []) => {
+    const exact = String(variable || "");
+    const trimmed = exact.trim();
+    const normalizedKey = findNormalizedFilterKey(filterValueOptionsByVariable, exact);
+    const normalizedCodesKey = findNormalizedFilterKey(filterColumnCodes, exact);
+    if (Array.isArray(filterValueOptionsByVariable[exact]) && filterValueOptionsByVariable[exact].length) {
+      return filterValueOptionsByVariable[exact];
+    }
+    if (trimmed && Array.isArray(filterValueOptionsByVariable[trimmed]) && filterValueOptionsByVariable[trimmed].length) {
+      return filterValueOptionsByVariable[trimmed];
+    }
+    if (normalizedKey && Array.isArray(filterValueOptionsByVariable[normalizedKey]) && filterValueOptionsByVariable[normalizedKey].length) {
+      return filterValueOptionsByVariable[normalizedKey];
+    }
+    if (Array.isArray(fallbackOptions) && fallbackOptions.length) {
+      return fallbackOptions;
+    }
+    if (Array.isArray(filterColumnCodes[exact]) && filterColumnCodes[exact].length) {
+      return filterColumnCodes[exact].map((value) => ({ value: String(value), label: String(value) }));
+    }
+    if (trimmed && Array.isArray(filterColumnCodes[trimmed]) && filterColumnCodes[trimmed].length) {
+      return filterColumnCodes[trimmed].map((value) => ({ value: String(value), label: String(value) }));
+    }
+    if (normalizedCodesKey && Array.isArray(filterColumnCodes[normalizedCodesKey]) && filterColumnCodes[normalizedCodesKey].length) {
+      return filterColumnCodes[normalizedCodesKey].map((value) => ({ value: String(value), label: String(value) }));
+    }
+    return [];
+  };
+
+  const compareFilterValueOptions = (left, right) => {
+    const leftValue = String(left?.value || "").trim();
+    const rightValue = String(right?.value || "").trim();
+    const leftNumber = Number(leftValue);
+    const rightNumber = Number(rightValue);
+    const leftIsNumber = leftValue !== "" && Number.isFinite(leftNumber);
+    const rightIsNumber = rightValue !== "" && Number.isFinite(rightNumber);
+    if (leftIsNumber && rightIsNumber) {
+      return leftNumber - rightNumber;
+    }
+    if (leftIsNumber) return -1;
+    if (rightIsNumber) return 1;
+    return leftValue.localeCompare(rightValue, undefined, { numeric: true, sensitivity: "base" });
+  };
+
+  const getConditionValueLabel = (conditionEl, value) => {
+    const normalizedValue = String(value || "").trim();
+    if (!normalizedValue) return "Select response";
+    const options = getConditionValueOptions(conditionEl);
+    const matched = options.find((item) => String(item.value || "").trim() === normalizedValue);
+    return matched ? String(matched.label || matched.value || normalizedValue) : normalizedValue;
+  };
+
+  const getConditionValue = (conditionEl) => {
+    const valueHidden = conditionEl?.querySelector("[data-filter-value-hidden]");
+    const valueInput = conditionEl?.querySelector("[data-filter-value-input]");
+    const trigger = conditionEl?.querySelector("[data-filter-value-trigger]");
+    if (trigger && !trigger.hidden && valueHidden) {
+      return String(valueHidden.value || "").trim();
+    }
+    return String(valueInput?.value || "").trim();
+  };
+
+  const setConditionValue = (conditionEl, nextValue = "") => {
+    const valueHidden = conditionEl?.querySelector("[data-filter-value-hidden]");
+    const valueInput = conditionEl?.querySelector("[data-filter-value-input]");
+    const trigger = conditionEl?.querySelector("[data-filter-value-trigger]");
+    const triggerValue = conditionEl?.querySelector("[data-filter-value-trigger-text]");
+    const normalizedValue = String(nextValue || "");
+    if (valueHidden) {
+      valueHidden.value = normalizedValue;
+    }
+    if (valueInput) {
+      valueInput.value = normalizedValue;
+    }
+    if (triggerValue) {
+      triggerValue.textContent = getConditionValueLabel(conditionEl, normalizedValue);
+      triggerValue.classList.toggle("custom-group-picker-placeholder", !normalizedValue);
+      triggerValue.classList.toggle("muted", !normalizedValue);
+    }
+    if (trigger) {
+      trigger.title = getConditionValueLabel(conditionEl, normalizedValue);
+    }
+  };
+
+  const closeFilterValuePicker = () => {
+    if (filterValuePicker) {
+      filterValuePicker.hidden = true;
+      filterValuePicker.style.display = "none";
+    }
+    activeFilterValueCondition = null;
+  };
+
+  const openFilterValuePicker = async (conditionEl) => {
+    if (!filterValuePicker || !filterValuePickerSelect) return;
+    let options = getConditionValueOptions(conditionEl);
+    if (!options.length) {
+      await updateFilterOperators(conditionEl, String(conditionEl?.querySelector("[data-filter-operator]")?.value || ""));
+      options = getConditionValueOptions(conditionEl);
+    }
+    if (!options.length) return;
+    options = [...options].sort(compareFilterValueOptions);
+    activeFilterValueCondition = conditionEl;
+    if (filterValuePickerVariable) {
+      const variable = String(conditionEl?.querySelector("[data-filter-variable]")?.value || "");
+      filterValuePickerVariable.value = getFilterVariableDisplayLabel(variable) || variable || "Selected variable";
+    }
+    const selectedValue = getConditionValue(conditionEl);
+    filterValuePickerSelect.innerHTML = "";
+    options.forEach((item) => {
+      const option = document.createElement("option");
+      option.value = String(item.value || "");
+      option.textContent = String(item.label || item.value || "");
+      option.selected = option.value === selectedValue;
+      filterValuePickerSelect.appendChild(option);
+    });
+    filterValuePicker.hidden = false;
+    filterValuePicker.style.display = "flex";
+    filterValuePickerSelect.focus();
+  };
+
+  const syncFilterValueControl = (conditionEl, config = {}) => {
+    const operator = String(config.operator || conditionEl?.querySelector("[data-filter-operator]")?.value || "").trim();
+    const fallbackValue = getConditionValue(conditionEl);
+    const selectedValue = String(config.selectedValue ?? fallbackValue ?? "");
+    const valueHidden = conditionEl?.querySelector("[data-filter-value-hidden]");
+    const valueInput = conditionEl?.querySelector("[data-filter-value-input]");
+    const valueTrigger = conditionEl?.querySelector("[data-filter-value-trigger]");
+    const options = Array.isArray(config.options) ? config.options : [];
+    if (!valueInput || !valueTrigger || !valueHidden) return;
+    conditionEl.dataset.valueOptions = JSON.stringify(options);
+
+    const useSelect = shouldUseValueSelect(options);
+    valueTrigger.hidden = !useSelect;
+    valueTrigger.style.display = useSelect ? "flex" : "none";
+    valueHidden.hidden = !useSelect;
+    valueInput.hidden = useSelect;
+    valueInput.style.display = useSelect ? "none" : "";
+
+    if (useSelect) {
+      valueTrigger.title = options.length ? options.map((item) => item.label || item.value).slice(0, 10).join(" | ") : "";
+      valueHidden.value = selectedValue;
+      setConditionValue(conditionEl, selectedValue);
+    } else {
+      valueInput.title = options.length ? `Available responses: ${options.map((item) => item.label || item.value).slice(0, 10).join(" | ")}` : "";
+      valueInput.placeholder = operator === "between" ? "min,max" : (operator === "in list" ? "value1, value2" : "Value");
+      valueInput.value = selectedValue;
+    }
+  };
+
+  const renderFilterSummary = () => {
+    const formatFilterValueDisplay = (variable, value) => {
+      const normalizedVariable = String(variable || "").trim();
+      const normalizedValue = String(value || "").trim();
+      if (!normalizedVariable || !normalizedValue) return normalizedValue;
+      const mappedOptions = Array.isArray(groupableQuestionOptions[normalizedVariable]) ? groupableQuestionOptions[normalizedVariable] : [];
+      const matched = mappedOptions.find((item) => String(item.code || "").trim() === normalizedValue);
+      if (matched && matched.label) {
+        return `${matched.code} - ${matched.label}`;
+      }
+      return normalizedValue;
+    };
+
+    const formatFilterCondition = (cond) => {
+      const variable = String(cond?.variable || "").trim();
+      const operator = String(cond?.operator || "").trim();
+      const value = formatFilterValueDisplay(variable, cond?.value);
+      return `${variable} ${operator} ${value}`.trim();
+    };
+
+    let summary = "No filters applied.";
+    if (currentFilter.active) {
+      if (currentFilter.type === "quick") {
+        const joiner = currentFilter.match_type === "all" ? " AND " : " OR ";
+        summary = currentFilter.conditions.map((cond) => formatFilterCondition(cond)).join(joiner);
+      } else {
+        summary = currentFilter.groups.map((group) => {
+          const text = (group.conditions || []).map((cond) => formatFilterCondition(cond)).join(` ${group.operator || "AND"} `);
+          return `(${text})`;
+        }).join(" AND ");
+      }
+    }
+    if (filterDisplay) {
+      filterDisplay.textContent = summary || "No filters applied.";
+    }
+    if (filterOpenButton) {
+      filterOpenButton.textContent = currentFilter.active ? "Edit Filter" : "Add Filter";
+    }
+    if (filterClearButton) {
+      filterClearButton.disabled = !currentFilter.active;
+    }
+    if (filterPreviewText) {
+      filterPreviewText.textContent = summary || "No filters applied.";
+    }
+  };
+
+  const syncFilterModeUI = () => {
+    const isQuick = currentFilter.type !== "advanced";
+    if (filterQuickMode) filterQuickMode.hidden = !isQuick;
+    if (filterAdvancedMode) filterAdvancedMode.hidden = isQuick;
+    filterModeRadios.forEach((radio) => {
+      radio.checked = radio.value === (isQuick ? "quick" : "advanced");
+    });
+  };
+
+  const updateFilterOperators = async (conditionEl, selectedOperator = "") => {
+    const variableSelect = conditionEl?.querySelector("[data-filter-variable]");
+    const operatorSelect = conditionEl?.querySelector("[data-filter-operator]");
+    const variable = String(variableSelect?.value || "");
+    if (!operatorSelect) return;
+    if (!variable) {
+      operatorSelect.innerHTML = '<option value="">Select operator...</option>';
+      syncFilterValueControl(conditionEl, { operator: "", options: [], selectedValue: "" });
+      return;
+    }
+    try {
+      const body = new FormData();
+      body.append("job_id", String(form.querySelector('input[name="job_id"]')?.value || ""));
+      body.append("variable", variable);
+      const response = await fetch("/get-variable-info", { method: "POST", body });
+      const data = response.ok ? await response.json() : { operators: ["="], type: "text", unique_values: [], value_options: [] };
+      operatorSelect.innerHTML = "";
+      (data.operators || ["="]).forEach((operator) => {
+        const option = document.createElement("option");
+        option.value = operator;
+        option.textContent = operator;
+        option.selected = operator === selectedOperator;
+        operatorSelect.appendChild(option);
+      });
+      if (!selectedOperator && operatorSelect.options.length) {
+        operatorSelect.selectedIndex = 0;
+      }
+      const mappedOptions = getFilterValueOptionsForVariable(
+        variable,
+        Array.isArray(data.value_options) ? data.value_options : []
+      );
+      syncFilterValueControl(conditionEl, {
+        operator: operatorSelect.value || selectedOperator,
+        options: mappedOptions,
+        selectedValue: getConditionValue(conditionEl),
+      });
+    } catch (error) {
+      operatorSelect.innerHTML = '<option value="=" selected>=</option>';
+      syncFilterValueControl(conditionEl, {
+        operator: "=",
+        options: getFilterValueOptionsForVariable(variable),
+        selectedValue: getConditionValue(conditionEl),
+      });
+    }
+  };
+
+  const collectFilterDataFromUI = () => {
+    const selectedMode = filterModeRadios.find((radio) => radio.checked)?.value || "quick";
+    if (selectedMode === "quick") {
+      const conditions = Array.from(filterQuickConditions?.querySelectorAll(".filter-condition") || []).map((conditionEl) => ({
+        variable: String(conditionEl.querySelector("[data-filter-variable]")?.value || ""),
+        operator: String(conditionEl.querySelector("[data-filter-operator]")?.value || "").trim(),
+        value: getConditionValue(conditionEl),
+      })).filter((condition) => condition.variable && condition.operator);
+      currentFilter = {
+        active: conditions.length > 0,
+        type: "quick",
+        conditions,
+        match_type: String(filterQuickMatch?.value || "all"),
+        groups: [],
+      };
+    } else {
+      const groups = Array.from(filterAdvancedGroups?.querySelectorAll(".filter-group") || []).map((groupEl) => ({
+        operator: String(groupEl.querySelector("[data-advanced-group-operator]")?.value || "AND"),
+        conditions: Array.from(groupEl.querySelectorAll(".filter-condition")).map((conditionEl) => ({
+          variable: String(conditionEl.querySelector("[data-filter-variable]")?.value || ""),
+          operator: String(conditionEl.querySelector("[data-filter-operator]")?.value || "").trim(),
+          value: getConditionValue(conditionEl),
+        })).filter((condition) => condition.variable && condition.operator),
+        nested_groups: [],
+      })).filter((group) => group.conditions.length > 0);
+      currentFilter = {
+        active: groups.length > 0,
+        type: "advanced",
+        conditions: [],
+        match_type: "all",
+        groups,
+      };
+    }
+    renderFilterSummary();
+  };
+
+  const addQuickFilterCondition = async (condition = {}) => {
+    if (!filterQuickConditions) return;
+    const conditionEl = document.createElement("div");
+    conditionEl.className = "filter-condition";
+    conditionEl.innerHTML = `
+      <select class="filter-var-select" data-filter-variable>${createFilterVariableOptionsMarkup(condition.variable)}</select>
+      <select class="filter-logic-select" data-filter-operator><option value="">Select operator...</option></select>
+      <button type="button" class="custom-group-picker-trigger filter-value-trigger" data-filter-value-trigger hidden><span class="custom-group-picker-value muted custom-group-picker-placeholder" data-filter-value-trigger-text>Select response</span></button>
+      <input type="hidden" data-filter-value-hidden hidden />
+      <input class="filter-codes-select" data-filter-value-input type="text" value="${escapeHtml(condition.value)}" placeholder="Value" hidden />
+      <button type="button" class="btn btn-small btn-danger" data-remove-filter-condition>Remove</button>
+    `;
+    filterQuickConditions.appendChild(conditionEl);
+    conditionEl.querySelector("[data-remove-filter-condition]")?.addEventListener("click", () => {
+      conditionEl.remove();
+      collectFilterDataFromUI();
+    });
+    conditionEl.querySelector("[data-filter-variable]")?.addEventListener("change", async () => {
+      await updateFilterOperators(conditionEl);
+      collectFilterDataFromUI();
+    });
+    conditionEl.querySelector("[data-filter-operator]")?.addEventListener("change", () => {
+      syncFilterValueControl(conditionEl, { selectedValue: getConditionValue(conditionEl) });
+      collectFilterDataFromUI();
+    });
+    conditionEl.querySelector("[data-filter-value-trigger]")?.addEventListener("click", async (event) => {
+      event.preventDefault();
+      await openFilterValuePicker(conditionEl);
+    });
+    conditionEl.querySelector("[data-filter-value-input]")?.addEventListener("input", collectFilterDataFromUI);
+    await updateFilterOperators(conditionEl, String(condition.operator || ""));
+    syncFilterValueControl(conditionEl, { selectedValue: String(condition.value || "") });
+  };
+
+  const addAdvancedFilterGroup = async (group = {}) => {
+    if (!filterAdvancedGroups) return;
+    const groupEl = document.createElement("div");
+    groupEl.className = "filter-group";
+    groupEl.innerHTML = `
+      <div class="filter-group-logic">
+        <select class="filter-logic-select" data-advanced-group-operator>
+          <option value="AND"${(group.operator || "AND") === "AND" ? " selected" : ""}>AND</option>
+          <option value="OR"${(group.operator || "AND") === "OR" ? " selected" : ""}>OR</option>
+        </select>
+      </div>
+      <div class="filter-group-conditions" data-advanced-group-conditions></div>
+      <div class="filter-modal-actions" style="justify-content:flex-start;">
+        <button type="button" class="btn btn-small" data-add-advanced-condition>+ Add Condition</button>
+        <button type="button" class="btn btn-small btn-danger" data-remove-advanced-group>Remove Group</button>
+      </div>
+    `;
+    filterAdvancedGroups.appendChild(groupEl);
+    const conditionsWrap = groupEl.querySelector("[data-advanced-group-conditions]");
+    const addCondition = async (condition = {}) => {
+      const conditionEl = document.createElement("div");
+      conditionEl.className = "filter-condition";
+      conditionEl.innerHTML = `
+        <select class="filter-var-select" data-filter-variable>${createFilterVariableOptionsMarkup(condition.variable)}</select>
+        <select class="filter-logic-select" data-filter-operator><option value="">Select operator...</option></select>
+        <button type="button" class="custom-group-picker-trigger filter-value-trigger" data-filter-value-trigger hidden><span class="custom-group-picker-value muted custom-group-picker-placeholder" data-filter-value-trigger-text>Select response</span></button>
+        <input type="hidden" data-filter-value-hidden hidden />
+        <input class="filter-codes-select" data-filter-value-input type="text" value="${escapeHtml(condition.value)}" placeholder="Value" hidden />
+        <button type="button" class="btn btn-small btn-danger" data-remove-filter-condition>Remove</button>
+      `;
+      conditionsWrap?.appendChild(conditionEl);
+      conditionEl.querySelector("[data-remove-filter-condition]")?.addEventListener("click", () => {
+        conditionEl.remove();
+        collectFilterDataFromUI();
+      });
+      conditionEl.querySelector("[data-filter-variable]")?.addEventListener("change", async () => {
+        await updateFilterOperators(conditionEl);
+        collectFilterDataFromUI();
+      });
+      conditionEl.querySelector("[data-filter-operator]")?.addEventListener("change", () => {
+        syncFilterValueControl(conditionEl, { selectedValue: getConditionValue(conditionEl) });
+        collectFilterDataFromUI();
+      });
+      conditionEl.querySelector("[data-filter-value-trigger]")?.addEventListener("click", async (event) => {
+        event.preventDefault();
+        await openFilterValuePicker(conditionEl);
+      });
+      conditionEl.querySelector("[data-filter-value-input]")?.addEventListener("input", collectFilterDataFromUI);
+      await updateFilterOperators(conditionEl, String(condition.operator || ""));
+      syncFilterValueControl(conditionEl, { selectedValue: String(condition.value || "") });
+    };
+    groupEl.querySelector("[data-advanced-group-operator]")?.addEventListener("change", collectFilterDataFromUI);
+    groupEl.querySelector("[data-add-advanced-condition]")?.addEventListener("click", async () => {
+      await addCondition();
+      collectFilterDataFromUI();
+    });
+    groupEl.querySelector("[data-remove-advanced-group]")?.addEventListener("click", () => {
+      groupEl.remove();
+      collectFilterDataFromUI();
+    });
+    if (Array.isArray(group.conditions) && group.conditions.length) {
+      for (const condition of group.conditions) {
+        await addCondition(condition);
+      }
+    } else {
+      await addCondition();
+    }
+  };
+
+  const renderFilterUIFromState = async () => {
+    syncFilterModeUI();
+    if (filterQuickMatch) {
+      filterQuickMatch.value = String(currentFilter.match_type || "all");
+    }
+    if (filterQuickConditions) {
+      filterQuickConditions.innerHTML = "";
+      if (currentFilter.type === "quick") {
+        for (const condition of currentFilter.conditions) {
+          await addQuickFilterCondition(condition);
+        }
+      }
+    }
+    if (filterAdvancedGroups) {
+      filterAdvancedGroups.innerHTML = "";
+      if (currentFilter.type === "advanced") {
+        for (const group of currentFilter.groups) {
+          await addAdvancedFilterGroup(group);
+        }
+      }
+    }
+    renderFilterSummary();
+  };
+
+  const applyFilterStateToForm = () => {
+    collectFilterDataFromUI();
+    if (filterDataInput) {
+      filterDataInput.value = currentFilter.active ? JSON.stringify(currentFilter) : "";
+    }
+  };
+
+  if (filterDataInput?.value) {
+    try {
+      const parsed = JSON.parse(filterDataInput.value);
+      if (parsed && typeof parsed === "object") {
+        currentFilter = {
+          active: Boolean(parsed.active),
+          type: parsed.type === "advanced" ? "advanced" : "quick",
+          conditions: Array.isArray(parsed.conditions) ? parsed.conditions : [],
+          match_type: parsed.match_type === "any" ? "any" : "all",
+          groups: Array.isArray(parsed.groups) ? parsed.groups : [],
+        };
+      }
+    } catch (error) {
+      currentFilter = { active: false, type: "quick", conditions: [], match_type: "all", groups: [] };
+    }
+  }
+
   applyPrefs({ ...defaultPrefs, ...(readPrefs() || {}) });
   if (colSelect) {
     colSelect.value = "(none)";
     syncSelectTitle(colSelect);
   }
   syncQuestionTypeLayout();
+  syncCustomGroupOptions();
+  if (customGroupDefinitionsInput && customGroupList && !customGroupList.children.length) {
+    const initialRows = parseDefinitionLines(customGroupDefinitionsInput.value || "");
+    if (initialRows.length) {
+      initialRows.forEach((item) => {
+        const resolved = resolveCustomGroupCodes((item.codes || []).join(","));
+        createCustomGroupRow({ label: item.label, codes: resolved.resolvedValues, displayCodes: resolved.displayTokens });
+      });
+    }
+    serializeCustomGroups();
+  }
+
+  renderFilterUIFromState();
+  applyFilterStateToForm();
+  closeFilterModal();
 
   if (swapBtn && rowSelect && colSelect) {
     swapBtn.addEventListener("click", () => {
@@ -439,28 +1397,198 @@
         select.dataset.userChosen = "true";
       }
       syncSelectTitle(select);
-      if (select === rowSelect) {
+      if (select === rowSelect || select === mrColsSelect) {
         syncConceptControls();
+        syncCustomGroupOptions();
       }
     });
   });
   if (qtypeSelect) {
-    qtypeSelect.addEventListener("change", syncQuestionTypeLayout);
+    qtypeSelect.addEventListener("change", () => {
+      syncQuestionTypeLayout();
+      syncCustomGroupOptions();
+    });
   }
   if (conceptToggle) {
     conceptToggle.addEventListener("change", syncConceptControls);
   }
+  form.querySelector("[data-open-filter-modal]")?.addEventListener("click", async () => {
+    if (!currentFilter.active && !currentFilter.conditions.length && !currentFilter.groups.length) {
+      currentFilter = {
+        active: false,
+        type: "quick",
+        conditions: [{ variable: "", operator: "", value: "" }],
+        match_type: "all",
+        groups: [],
+      };
+    }
+    await renderFilterUIFromState();
+    openFilterModal();
+  });
+  form.querySelector("[data-clear-filter]")?.addEventListener("click", async () => {
+    currentFilter = { active: false, type: "quick", conditions: [], match_type: "all", groups: [] };
+    await renderFilterUIFromState();
+    applyFilterStateToForm();
+    requestPreviewRefresh();
+  });
+  filterModalBackdrop?.querySelector("[data-close-filter-modal]")?.addEventListener("click", closeFilterModal);
+  filterModalBackdrop?.querySelector("[data-add-quick-filter]")?.addEventListener("click", async () => {
+    await addQuickFilterCondition();
+    collectFilterDataFromUI();
+  });
+  filterModalBackdrop?.querySelector("[data-apply-filter]")?.addEventListener("click", async () => {
+    collectFilterDataFromUI();
+    await renderFilterUIFromState();
+    applyFilterStateToForm();
+    closeFilterModal();
+    requestPreviewRefresh();
+  });
+  filterModalBackdrop?.querySelectorAll("[data-add-advanced-group]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await addAdvancedFilterGroup({ operator: button.value || "AND", conditions: [] });
+      collectFilterDataFromUI();
+    });
+  });
+  filterModeRadios.forEach((radio) => {
+    radio.addEventListener("change", async () => {
+      currentFilter.type = radio.value === "advanced" ? "advanced" : "quick";
+      if (currentFilter.type === "quick" && !currentFilter.conditions.length) {
+        currentFilter.conditions = [{ variable: "", operator: "", value: "" }];
+      }
+      if (currentFilter.type === "advanced" && !currentFilter.groups.length) {
+        currentFilter.groups = [{ operator: "AND", conditions: [{ variable: "", operator: "", value: "" }] }];
+      }
+      await renderFilterUIFromState();
+      collectFilterDataFromUI();
+    });
+  });
+  filterQuickMatch?.addEventListener("change", collectFilterDataFromUI);
+  filterValuePicker?.querySelector("[data-filter-value-picker-close]")?.addEventListener("click", closeFilterValuePicker);
+  filterValuePicker?.querySelector("[data-filter-value-picker-done]")?.addEventListener("click", () => {
+    if (activeFilterValueCondition && filterValuePickerSelect) {
+      setConditionValue(activeFilterValueCondition, filterValuePickerSelect.value || "");
+      collectFilterDataFromUI();
+    }
+    closeFilterValuePicker();
+  });
+  filterValuePickerSelect?.addEventListener("dblclick", () => {
+    filterValuePicker?.querySelector("[data-filter-value-picker-done]")?.click();
+  });
+  filterValuePicker?.addEventListener("click", (event) => {
+    if (event.target === filterValuePicker) {
+      closeFilterValuePicker();
+    }
+  });
+  filterModalBackdrop?.addEventListener("click", (event) => {
+    if (event.target === filterModalBackdrop) {
+      closeFilterModal();
+    }
+  });
+  document.addEventListener("click", async (event) => {
+    const trigger = event.target instanceof Element ? event.target.closest("[data-filter-value-trigger]") : null;
+    if (!trigger) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const conditionEl = trigger.closest(".filter-condition");
+    if (conditionEl) {
+      await openFilterValuePicker(conditionEl);
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && filterModalBackdrop && !filterModalBackdrop.hidden) {
+      closeFilterModal();
+    }
+  });
+  if (addCustomGroupBtn) {
+    addCustomGroupBtn.addEventListener("click", () => {
+      const label = customGroupDraftLabel ? String(customGroupDraftLabel.value || "").trim() : "";
+      const resolved = resolveCustomGroupCodes(getSelectedPickerValues());
+      if (!label || !resolved.resolvedValues.length) {
+        return;
+      }
+      if (editingCustomGroupRow) {
+        editingCustomGroupRow.classList.remove("is-editing");
+        setCustomGroupRowContent(editingCustomGroupRow, { label, codes: resolved.resolvedValues, displayCodes: resolved.displayTokens });
+      } else {
+        createCustomGroupRow({ label, codes: resolved.resolvedValues, displayCodes: resolved.displayTokens });
+      }
+      resetCustomGroupDraft();
+      serializeCustomGroups();
+      requestPreviewRefresh();
+    });
+  }
+  [customGroupDraftLabel].forEach((field) => {
+    if (!field) return;
+    field.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        addCustomGroupBtn?.click();
+      }
+    });
+  });
+  customGroupPickerTrigger?.addEventListener("click", () => {
+    if (customGroupPicker) {
+      customGroupPicker.hidden = false;
+    }
+    if (customGroupPickerLabelInput && customGroupDraftLabel) {
+      customGroupPickerLabelInput.value = customGroupDraftLabel.value;
+    }
+  });
+  form.querySelectorAll("[data-custom-group-picker-close]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (customGroupPicker) {
+        customGroupPicker.hidden = true;
+      }
+    });
+  });
+  customGroupPickerDone?.addEventListener("click", () => {
+    const label = customGroupPickerLabelInput ? String(customGroupPickerLabelInput.value || "").trim() : (customGroupDraftLabel ? String(customGroupDraftLabel.value || "").trim() : "");
+    const resolved = resolveCustomGroupCodes(getSelectedPickerValues());
+    if (!label || !resolved.resolvedValues.length) {
+      if (customGroupPicker) {
+        customGroupPicker.hidden = true;
+      }
+      return;
+    }
+    if (editingCustomGroupRow) {
+      editingCustomGroupRow.classList.remove("is-editing");
+      setCustomGroupRowContent(editingCustomGroupRow, { label, codes: resolved.resolvedValues, displayCodes: resolved.displayTokens });
+    } else {
+      createCustomGroupRow({ label, codes: resolved.resolvedValues, displayCodes: resolved.displayTokens });
+    }
+    if (customGroupDraftLabel) {
+      customGroupDraftLabel.value = label;
+    }
+    resetCustomGroupDraft();
+    serializeCustomGroups();
+    requestPreviewRefresh();
+    if (customGroupPicker) {
+      customGroupPicker.hidden = true;
+    }
+  });
+  customGroupPickerSelect?.addEventListener("change", syncCustomGroupPickerLabel);
+  document.addEventListener("mousedown", (event) => {
+    if (!customGroupPicker || customGroupPicker.hidden) return;
+    const target = event.target;
+    if (!(target instanceof Node)) return;
+    if (customGroupPicker.contains(target) || customGroupPickerTrigger?.contains(target)) return;
+    customGroupPicker.hidden = true;
+  });
   previewAutoRefreshFields.forEach((field) => {
     field.addEventListener("change", requestPreviewRefresh);
   });
 
   syncConceptControls();
+  syncCustomGroupOptions();
 
   prefNames.forEach((name) => {
     const field = form.elements.namedItem(name);
     if (!field || field instanceof RadioNodeList) return;
     field.addEventListener("change", savePrefs);
   });
-  form.addEventListener("submit", savePrefs);
+  form.addEventListener("submit", () => {
+    applyFilterStateToForm();
+    savePrefs();
+  });
 })();
 </script>
