@@ -4,6 +4,8 @@ import os
 import io
 import json
 import re
+import shutil
+import time
 import uuid
 import tempfile
 from copy import deepcopy
@@ -29,6 +31,8 @@ except Exception:
 
 APP_TITLE = "Simple Crosstab Application"
 APP_VERSION = "v6.0"
+JOB_STATE_FILENAME = "job_state.json"
+DEFAULT_JOB_TTL_SECONDS = 60 * 60 * 24
 
 
 def _default_upload_dir() -> str:
@@ -36,6 +40,7 @@ def _default_upload_dir() -> str:
 
 
 UPLOAD_DIR = os.environ.get("CROSSTAB_UPLOAD_DIR", _default_upload_dir())
+JOB_TTL_SECONDS = max(0, int(os.environ.get("CROSSTAB_JOB_TTL_SECONDS", str(DEFAULT_JOB_TTL_SECONDS))))
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 app = FastAPI(title=APP_TITLE)
@@ -101,6 +106,204 @@ class ConceptColumn:
 
 
 CODEBOOK_REQUIRED_COLUMNS = {"question", "code", "label", "order"}
+
+
+def _validate_job_id(job_id: str) -> str:
+    normalized = str(job_id).strip()
+    if not normalized or normalized != os.path.basename(normalized):
+        raise RuntimeError("Invalid job id.")
+    return normalized
+
+
+def _upload_root_realpath() -> str:
+    return os.path.realpath(UPLOAD_DIR)
+
+
+def _path_within_upload_root(path: str) -> bool:
+    root = _upload_root_realpath()
+    candidate = os.path.realpath(path)
+    return candidate == root or candidate.startswith(root + os.sep)
+
+
+def _job_dir(job_id: str) -> str:
+    return os.path.join(UPLOAD_DIR, _validate_job_id(job_id))
+
+
+def _job_state_path(job_id: str) -> str:
+    return os.path.join(_job_dir(job_id), JOB_STATE_FILENAME)
+
+
+def _unique_string_values(df: Any, column: str, limit: int = 50) -> List[str]:
+    try:
+        series = df[column]
+    except Exception:
+        return []
+
+    try:
+        if hasattr(series, "drop_nulls"):
+            values = series.drop_nulls().unique().to_list()
+        else:
+            values = series.dropna().unique().tolist()
+    except Exception:
+        return []
+
+    unique: List[str] = []
+    for value in values:
+        if value is None:
+            continue
+        unique.append(str(value))
+        if len(unique) >= limit:
+            break
+    return unique
+
+
+def _build_column_codes(df: Any) -> Dict[str, List[str]]:
+    return {str(column): _unique_string_values(df, str(column)) for column in list(df.columns)}
+
+
+def _job_state_payload(job: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": str(job.get("id", "")),
+        "name": str(job.get("name", "")),
+        "path": str(job.get("path", "")),
+        "value_path": str(job.get("value_path", "")),
+        "last_result": deepcopy(job.get("last_result")),
+        "last_pct_suffix": bool(job.get("last_pct_suffix", False)),
+        "last_saved_message": job.get("last_saved_message"),
+        "saved_modal_open": bool(job.get("saved_modal_open", False)),
+        "saved_outputs": deepcopy(list(job.get("saved_outputs", []))),
+        "updated_at": time.time(),
+    }
+
+
+def _persist_job_state(job: Dict[str, Any]) -> None:
+    job_id = str(job.get("id", "")).strip()
+    if not job_id:
+        return
+    job_dir = _job_dir(job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    state_path = _job_state_path(job_id)
+    tmp_path = f"{state_path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(_job_state_payload(job), handle, ensure_ascii=True, indent=2)
+    os.replace(tmp_path, state_path)
+
+
+def _load_job_state(job_id: str) -> Optional[Dict[str, Any]]:
+    state_path = _job_state_path(job_id)
+    if not os.path.exists(state_path):
+        return None
+    with open(state_path, "r", encoding="utf-8") as handle:
+        state = json.load(handle)
+    return state if isinstance(state, dict) else None
+
+
+def _build_job_runtime(text_path: str, value_path: str, job_id: str, job_name: str) -> Dict[str, Any]:
+    mapping_bundle = load_mapping(text_path, value_path)
+    df = _read_dataframe(text_path)
+    columns = [str(column) for column in df.columns]
+    return {
+        "id": job_id,
+        "name": job_name,
+        "path": text_path,
+        "value_path": value_path,
+        "value_df": None,
+        "mapping_bundle": mapping_bundle,
+        "groupable_question_options": _groupable_question_options(mapping_bundle),
+        "columns": columns,
+        "column_display_labels": _column_display_labels(columns),
+        "column_codes": _build_column_codes(df),
+        "filter_value_options": _build_filter_value_options(df, mapping_bundle),
+        "dich_cols": _detect_dichotomy_columns(df),
+        "mr_detection": detect_mr_groups(df),
+        "concept_detection": detect_concept_groups(columns),
+        "saved_outputs": [],
+        "last_saved_message": None,
+        "saved_modal_open": False,
+    }
+
+
+def _restore_job_from_disk(job_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        state = _load_job_state(job_id)
+    except Exception:
+        return None
+    if not state:
+        return None
+
+    text_path = str(state.get("path", "") or "")
+    value_path = str(state.get("value_path", "") or "")
+    if not text_path or not value_path or not os.path.exists(text_path) or not os.path.exists(value_path):
+        return None
+
+    try:
+        job = _build_job_runtime(
+            text_path=text_path,
+            value_path=value_path,
+            job_id=str(state.get("id") or job_id),
+            job_name=str(state.get("name") or os.path.basename(text_path)),
+        )
+    except Exception:
+        return None
+
+    job["saved_outputs"] = list(state.get("saved_outputs") or [])
+    job["last_result"] = state.get("last_result")
+    job["last_pct_suffix"] = bool(state.get("last_pct_suffix", False))
+    job["last_saved_message"] = state.get("last_saved_message")
+    job["saved_modal_open"] = bool(state.get("saved_modal_open", False))
+    return job
+
+
+def _get_job(job_id: str) -> Optional[Dict[str, Any]]:
+    normalized = str(job_id).strip()
+    if not normalized:
+        return None
+    job = JOBS.get(normalized)
+    if job is not None:
+        return job
+    restored = _restore_job_from_disk(normalized)
+    if restored is not None:
+        JOBS[normalized] = restored
+    return restored
+
+
+def _cleanup_job_directory(job_id: str) -> None:
+    job_dir = _job_dir(job_id)
+    if os.path.isdir(job_dir) and _path_within_upload_root(job_dir):
+        shutil.rmtree(job_dir)
+
+
+def _cleanup_stale_job_dirs(
+    upload_dir: Optional[str] = None,
+    max_age_seconds: Optional[int] = None,
+    now: Optional[float] = None,
+) -> List[str]:
+    root = os.path.realpath(upload_dir or UPLOAD_DIR)
+    ttl = JOB_TTL_SECONDS if max_age_seconds is None else max(0, int(max_age_seconds))
+    if ttl <= 0 or not os.path.isdir(root):
+        return []
+
+    current_time = time.time() if now is None else float(now)
+    removed: List[str] = []
+    for entry in os.scandir(root):
+        if not entry.is_dir():
+            continue
+        candidate = os.path.realpath(entry.path)
+        if candidate != root and not candidate.startswith(root + os.sep):
+            continue
+        try:
+            age_seconds = current_time - entry.stat().st_mtime
+        except OSError:
+            continue
+        if age_seconds < ttl:
+            continue
+        try:
+            shutil.rmtree(candidate)
+            removed.append(os.path.basename(candidate))
+            JOBS.pop(os.path.basename(candidate), None)
+        except OSError:
+            continue
+    return removed
 
 
 def _is_selected(expr: pl.Expr) -> pl.Expr:
@@ -200,6 +403,43 @@ def _longest_common_prefix(text1: str, text2: str) -> str:
     return "".join(prefix_chars)
 
 
+def _fallback_mr_option_label(column: str, stem: str) -> str:
+    normalized_column = _normalize_label_text(column)
+    normalized_stem = _normalize_label_text(stem)
+    if not normalized_column or not normalized_stem or not normalized_column.startswith(normalized_stem):
+        return str(column)
+
+    boundary_patterns = [
+        " | ",
+        "\t",
+        ". ",
+        ".",
+        "。 ",
+        "。",
+        "? ",
+        "?",
+        "？ ",
+        "？",
+        ": ",
+        "： ",
+        " - ",
+    ]
+
+    boundary_index = -1
+    boundary_length = 0
+    for pattern in boundary_patterns:
+        idx = normalized_stem.rfind(pattern)
+        if idx > boundary_index:
+            boundary_index = idx
+            boundary_length = len(pattern)
+
+    if boundary_index < 0:
+        return str(column)
+
+    shortened = normalized_column[boundary_index + boundary_length:].strip()
+    return shortened if shortened else str(column)
+
+
 def _build_mr_group(stem: str, columns: List[str], options: List[str]) -> MRGroup:
     return MRGroup(stem=stem, columns=list(columns), options=list(options))
 
@@ -259,15 +499,8 @@ def _group_from_similarity_fallback(df: pl.DataFrame, binary_columns: List[str],
             continue
         if not all(column in binary_set for column in matched_columns):
             continue
-        options = []
-        valid = True
-        for column in matched_columns:
-            option = normalized_map[column][len(stem):].strip(" :：|-。")
-            if not option:
-                valid = False
-                break
-            options.append(option)
-        if not valid or len({option.lower() for option in options}) != len(options):
+        options = [_fallback_mr_option_label(str(column), stem) for column in matched_columns]
+        if len({option.lower() for option in options}) != len(options):
             continue
         mr_groups[stem] = _build_mr_group(stem, matched_columns, options)
     return mr_groups
@@ -605,19 +838,17 @@ def _sort_row_categories(categories: List[OrderedCategory], row_sort_mode: str) 
 
 
 def _sort_column_categories(categories: List[OrderedCategory]) -> List[OrderedCategory]:
-    numeric_columns: List[Tuple[Decimal, OrderedCategory]] = []
-    for category in categories:
+    def sort_key(category: OrderedCategory) -> Tuple[int, Any, str]:
+        raw_code = str(category.raw_code)
         try:
-            numeric_columns.append((Decimal(category.raw_code), category))
+            return (0, Decimal(raw_code), raw_code.casefold())
         except InvalidOperation:
-            return list(categories)
-    numeric_columns.sort(key=lambda item: item[0])
-    return [category for _, category in numeric_columns]
+            return (1, raw_code.casefold(), raw_code.casefold())
+
+    return sorted(categories, key=sort_key)
 
 
 def _apply_column_ordering(bundle: MappingBundle, categories: List[OrderedCategory]) -> List[OrderedCategory]:
-    if bundle.source_kind == "codebook":
-        return sorted(categories, key=lambda category: category.order)
     return _sort_column_categories(categories)
 
 
@@ -835,22 +1066,10 @@ def _build_filter_value_options(
             except Exception:
                 pass
 
-        try:
-            if pd is not None:
-                unique_values = df[column].dropna().unique()
-                options_by_column[column] = [
-                    {"value": str(val), "label": str(val)}
-                    for val in unique_values[:50]
-                    if val is not None
-                ]
-            else:
-                unique_values = df[column].drop_nulls().unique()
-                options_by_column[column] = [
-                    {"value": str(val), "label": str(val)}
-                    for val in unique_values[:50]
-                ]
-        except Exception:
-            options_by_column[column] = []
+        options_by_column[column] = [
+            {"value": value, "label": value}
+            for value in _unique_string_values(df, column)
+        ]
     return options_by_column
 
 
@@ -902,6 +1121,55 @@ def _build_question_mappings(text_df: "pd.DataFrame", value_df: "pd.DataFrame") 
     )
 
 
+def _numeric_like_ratio(df: "pd.DataFrame", sample_limit: int = 4000) -> float:
+    seen = 0
+    numeric_like = 0
+    for column in df.columns:
+        for value in df[column].tolist():
+            if value is None or (pd is not None and pd.isna(value)):
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            seen += 1
+            lowered = text.casefold()
+            if isinstance(value, (int, float, bool)) or re.fullmatch(r"[+-]?\d+(?:\.\d+)?", text):
+                numeric_like += 1
+            elif lowered in ({"0", "1"} | YES_WORDS | NO_WORDS):
+                numeric_like += 1
+            if seen >= sample_limit:
+                return numeric_like / seen
+    return (numeric_like / seen) if seen else 0.0
+
+
+def _label_like_ratio(df: "pd.DataFrame", sample_limit: int = 4000) -> float:
+    seen = 0
+    label_like = 0
+    for column in df.columns:
+        for value in df[column].tolist():
+            if value is None or (pd is not None and pd.isna(value)):
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            seen += 1
+            lowered = text.casefold()
+            if not re.fullmatch(r"[+-]?\d+(?:\.\d+)?", text) and lowered not in ({"0", "1"} | YES_WORDS | NO_WORDS):
+                if len(text) >= 6 or bool(re.search(r"\s", text)):
+                    label_like += 1
+            if seen >= sample_limit:
+                return label_like / seen
+    return (label_like / seen) if seen else 0.0
+
+
+def _orientation_confidence(text_df: "pd.DataFrame", value_df: "pd.DataFrame") -> float:
+    text_numeric = _numeric_like_ratio(text_df)
+    value_numeric = _numeric_like_ratio(value_df)
+    text_label_like = _label_like_ratio(text_df)
+    value_label_like = _label_like_ratio(value_df)
+    return (value_numeric - text_numeric) + (text_label_like - value_label_like)
+
+
 def _load_mapping_bundle(text_path: str, value_path: str) -> MappingBundle:
     codebook_df = _extract_codebook_frame(value_path)
     if codebook_df is not None:
@@ -944,6 +1212,7 @@ def _resolve_uploaded_workbook_roles(
 
     seen: set[Tuple[str, str]] = set()
     errors: List[str] = []
+    successful_candidates: List[Tuple[float, str, str, MappingBundle]] = []
     for text_path, value_path in candidates:
         key = (text_path, value_path)
         if key in seen:
@@ -951,9 +1220,20 @@ def _resolve_uploaded_workbook_roles(
         seen.add(key)
         try:
             bundle = _load_mapping_bundle(text_path, value_path)
-            return text_path, value_path, bundle
+            if bundle.source_kind == "codebook":
+                return text_path, value_path, bundle
+            text_df = _read_excel_object_dataframe(text_path)
+            value_df = _read_excel_object_dataframe(value_path)
+            _validate_mapping_frames(text_df, value_df)
+            successful_candidates.append(
+                (_orientation_confidence(text_df, value_df), text_path, value_path, bundle)
+            )
         except Exception as e:
             errors.append(f"text={os.path.basename(text_path)}, value={os.path.basename(value_path)} -> {e}")
+
+    if successful_candidates:
+        successful_candidates.sort(key=lambda item: item[0], reverse=True)
+        return successful_candidates[0][1], successful_candidates[0][2], successful_candidates[0][3]
 
     joined = " | ".join(errors) if errors else "no compatible workbook pairing found"
     raise RuntimeError(f"Failed to identify text workbook and Value.xlsx automatically: {joined}")
@@ -1991,10 +2271,29 @@ def tabulate_mr(
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
+    _cleanup_stale_job_dirs()
     return templates.TemplateResponse(
         "index.html",
         {"request": request, "title": APP_TITLE, "version": APP_VERSION, "job": None, "result": None},
     )
+
+
+@app.get("/health/deploy-smoke", response_class=JSONResponse)
+def deploy_smoke() -> JSONResponse:
+    _cleanup_stale_job_dirs()
+    payload = {
+        "status": "ok",
+        "app_title": APP_TITLE,
+        "version": APP_VERSION,
+        "template_dir": TEMPLATES_DIR,
+        "template_dir_exists": os.path.isdir(TEMPLATES_DIR),
+        "static_dir_exists": os.path.isdir(STATIC_DIR),
+        "upload_dir": UPLOAD_DIR,
+        "upload_dir_exists": os.path.isdir(UPLOAD_DIR),
+        "job_ttl_seconds": JOB_TTL_SECONDS,
+        "state_backend": "disk-backed-single-region",
+    }
+    return JSONResponse(payload)
 
 
 @app.post("/upload", response_class=HTMLResponse)
@@ -2003,6 +2302,7 @@ async def upload(
     file: UploadFile = File(...),
     value_file: UploadFile = File(...),
 ):
+    _cleanup_stale_job_dirs()
     job_id = str(uuid.uuid4())
 
     # Per-job temp folder (safe for Koyeb ephemeral FS)
@@ -2041,40 +2341,25 @@ async def upload(
             value_file.filename,
         )
     except Exception as e:
+        _cleanup_job_directory(job_id)
         raise HTTPException(status_code=400, detail=str(e))
 
     try:
         df = _read_dataframe(text_path)
     except HTTPException:
+        _cleanup_job_directory(job_id)
         raise
     except Exception as e:
+        _cleanup_job_directory(job_id)
         raise HTTPException(status_code=400, detail=str(e))
     dich_cols = _detect_dichotomy_columns(df)
     mr_detection = detect_mr_groups(df)
     concept_detection = detect_concept_groups([str(column) for column in df.columns])
 
-    # Build column_codes dictionary for filter functionality
-    column_codes = {}
-    if pd is not None:
-        for col in df.columns:
-            try:
-                unique_values = df[col].dropna().unique()
-                column_codes[col] = [str(val) for val in unique_values if val is not None]
-            except Exception:
-                column_codes[col] = []
-    else:
-        # Fallback for polars
-        for col in df.columns:
-            try:
-                unique_values = df[col].drop_nulls().unique()
-                column_codes[col] = [str(val) for val in unique_values]
-            except Exception:
-                column_codes[col] = []
-
     columns = [str(column) for column in df.columns]
     filter_value_options = _build_filter_value_options(df, mapping_bundle)
 
-    JOBS[job_id] = {
+    job = {
         "id": job_id,
         "name": os.path.basename(text_path),
         "path": text_path,
@@ -2084,7 +2369,7 @@ async def upload(
         "groupable_question_options": _groupable_question_options(mapping_bundle),
         "columns": columns,
         "column_display_labels": _column_display_labels(columns),
-        "column_codes": column_codes,
+        "column_codes": _build_column_codes(df),
         "filter_value_options": filter_value_options,
         "dich_cols": dich_cols,
         "mr_detection": mr_detection,
@@ -2093,15 +2378,17 @@ async def upload(
         "last_saved_message": None,
         "saved_modal_open": False,
     }
+    JOBS[job_id] = job
+    _persist_job_state(job)
 
     if _is_partial_request(request):
         return templates.TemplateResponse(
             "_dataset_panel.html",
-            {"request": request, "title": APP_TITLE, "job": JOBS[job_id]},
+            {"request": request, "title": APP_TITLE, "job": job},
         )
     return templates.TemplateResponse(
         "index.html",
-        {"request": request, "title": APP_TITLE, "version": APP_VERSION, "job": JOBS[job_id], "result": None},
+        {"request": request, "title": APP_TITLE, "version": APP_VERSION, "job": job, "result": None},
     )
 
 @app.post("/run", response_class=HTMLResponse)
@@ -2132,10 +2419,9 @@ def run(
     include_base: str | None = Form(None),
     include_totals: str | None = Form(None),
 ):
-    if job_id not in JOBS:
+    job = _get_job(job_id)
+    if job is None:
         return _render_error_panel("Invalid job id.")
-
-    job = JOBS[job_id]
     mapping_bundle = job.get("mapping_bundle")
     if mapping_bundle is None:
         return _render_error_panel("This crosstab requires an uploaded text workbook paired with Value.xlsx.")
@@ -2160,23 +2446,7 @@ def run(
 
     # Populate column_codes if missing (for existing jobs)
     if "column_codes" not in job or not job["column_codes"]:
-        column_codes = {}
-        if pd is not None:
-            for col in df.columns:
-                try:
-                    unique_values = df[col].dropna().unique()
-                    column_codes[col] = [str(val) for val in unique_values if val is not None]
-                except Exception:
-                    column_codes[col] = []
-        else:
-            # Fallback for polars
-            for col in df.columns:
-                try:
-                    unique_values = df[col].drop_nulls().unique()
-                    column_codes[col] = [str(val) for val in unique_values]
-                except Exception:
-                    column_codes[col] = []
-        job["column_codes"] = column_codes
+        job["column_codes"] = _build_column_codes(df)
     if "filter_value_options" not in job or not job["filter_value_options"]:
         job["filter_value_options"] = _build_filter_value_options(df, mapping_bundle)
 
@@ -2299,12 +2569,13 @@ def run(
     job['last_pct_suffix'] = (pct_suffix is not None)
     job['last_saved_message'] = None
     job['saved_modal_open'] = False
+    _persist_job_state(job)
     return _render_result_panel(request, job)
 
 
 @app.post("/save-output/{job_id}", response_class=HTMLResponse)
 def save_output(request: Request, job_id: str):
-    job = JOBS.get(job_id)
+    job = _get_job(job_id)
     if not job or "last_result" not in job:
         return HTMLResponse("No output available to save.", status_code=400)
 
@@ -2317,12 +2588,13 @@ def save_output(request: Request, job_id: str):
     saved_outputs.append(snapshot)
     job["last_saved_message"] = f"Saved output #{len(saved_outputs)} for later group export."
     job["saved_modal_open"] = False
+    _persist_job_state(job)
     return _render_result_panel(request, job)
 
 
 @app.post("/delete-saved-output/{job_id}/{saved_index}", response_class=HTMLResponse)
 def delete_saved_output(request: Request, job_id: str, saved_index: int):
-    job = JOBS.get(job_id)
+    job = _get_job(job_id)
     if not job:
         return HTMLResponse("Invalid job id", status_code=400)
 
@@ -2334,12 +2606,13 @@ def delete_saved_output(request: Request, job_id: str, saved_index: int):
     _renumber_saved_outputs(saved_outputs)
     job["last_saved_message"] = f"Deleted saved output: {removed['title']}"
     job["saved_modal_open"] = True
+    _persist_job_state(job)
     return _render_result_panel(request, job)
 
 
 @app.post("/move-saved-output/{job_id}/{saved_index}", response_class=HTMLResponse)
 def move_saved_output(request: Request, job_id: str, saved_index: int, direction: str = Form(...)):
-    job = JOBS.get(job_id)
+    job = _get_job(job_id)
     if not job:
         return HTMLResponse("Invalid job id", status_code=400)
 
@@ -2356,12 +2629,13 @@ def move_saved_output(request: Request, job_id: str, saved_index: int, direction
     _move_saved_output_to_index(saved_outputs, saved_index, new_index)
     job["last_saved_message"] = f"Moved saved output to position {new_index + 1}."
     job["saved_modal_open"] = True
+    _persist_job_state(job)
     return _render_result_panel(request, job)
 
 
 @app.post("/renumber-saved-output/{job_id}/{saved_index}", response_class=HTMLResponse)
 def renumber_saved_output(request: Request, job_id: str, saved_index: int, target_position: int = Form(...)):
-    job = JOBS.get(job_id)
+    job = _get_job(job_id)
     if not job:
         return HTMLResponse("Invalid job id", status_code=400)
 
@@ -2379,12 +2653,13 @@ def renumber_saved_output(request: Request, job_id: str, saved_index: int, targe
     else:
         job["last_saved_message"] = f"Saved output is already at position {bounded_position}."
     job["saved_modal_open"] = True
+    _persist_job_state(job)
     return _render_result_panel(request, job)
 
 
 @app.post("/resequence-saved-outputs/{job_id}", response_class=HTMLResponse)
 async def resequence_saved_outputs(request: Request, job_id: str):
-    job = JOBS.get(job_id)
+    job = _get_job(job_id)
     if not job:
         return HTMLResponse("Invalid job id", status_code=400)
 
@@ -2409,6 +2684,7 @@ async def resequence_saved_outputs(request: Request, job_id: str):
     _renumber_saved_outputs(saved_outputs)
     job["last_saved_message"] = "Applied saved output sequence changes."
     job["saved_modal_open"] = True
+    _persist_job_state(job)
     return _render_result_panel(request, job)
 
 
@@ -2416,10 +2692,9 @@ async def resequence_saved_outputs(request: Request, job_id: str):
 
 @app.get("/export-saved/{job_id}")
 def export_saved(job_id: str, mode: str = "single"):
-    if job_id not in JOBS:
+    job = _get_job(job_id)
+    if job is None:
         return HTMLResponse("Job not found.", status_code=404)
-
-    job = JOBS[job_id]
     saved_outputs = job.get("saved_outputs", [])
     if not saved_outputs:
         return HTMLResponse("No result to export for this job.", status_code=400)
@@ -2468,7 +2743,7 @@ def export_saved(job_id: str, mode: str = "single"):
 
 @app.get("/export/{job_id}")
 def export_excel(job_id: str):
-    job = JOBS.get(job_id)
+    job = _get_job(job_id)
     if not job or "last_result" not in job:
         return HTMLResponse("No result to export for this job.", status_code=400)
 
@@ -2956,10 +3231,9 @@ def generate_filter_preview(filter_data: Dict[str, Any]) -> Dict[str, str]:
 @app.post("/get-variable-info")
 async def get_variable_info(request: Request, job_id: str = Form(...), variable: str = Form(...)):
     """Get information about a variable including type and available operators."""
-    if job_id not in JOBS:
+    job = _get_job(job_id)
+    if job is None:
         return JSONResponse({"error": "Invalid job ID"}, status_code=404)
-    
-    job = JOBS[job_id]
     df = _get_job_value_dataframe(job)
     
     var_type = _detect_variable_type(df, variable)
@@ -3038,10 +3312,9 @@ async def test_filter_panel(request: Request):
 @app.get("/variables")
 async def get_variables(dataset_id: str):
     """Get variables and metadata for a dataset."""
-    if dataset_id not in JOBS:
+    job = _get_job(dataset_id)
+    if job is None:
         return JSONResponse({"error": "Invalid job ID"}, status_code=404)
-    
-    job = JOBS[dataset_id]
     return JSONResponse({
         "columns": list(job.get("columns", [])),
         "dich_cols": list(job.get("dich_cols", [])),
@@ -3056,10 +3329,9 @@ async def crosstab_endpoint(request: Request, payload: Dict[str, Any]):
     """Generate crosstab with optional filtering."""
     try:
         job_id = payload.get("dataset_id")
-        if not job_id or job_id not in JOBS:
+        job = _get_job(str(job_id or ""))
+        if job is None:
             return JSONResponse({"error": "Invalid job ID"}, status_code=404)
-        
-        job = JOBS[job_id]
         mapping_bundle = job.get("mapping_bundle")
         if mapping_bundle is None:
             return JSONResponse({"error": "This crosstab requires an uploaded text workbook paired with Value.xlsx."}, status_code=400)
@@ -3203,7 +3475,11 @@ async def crosstab_endpoint(request: Request, payload: Dict[str, Any]):
         result["custom_group_definitions"] = custom_group_definitions
         result["custom_group_label"] = custom_group_label
         result["row_sort_mode"] = row_sort_mode
-        
+        job["last_result"] = result
+        job["last_pct_suffix"] = False
+        job["last_saved_message"] = None
+        job["saved_modal_open"] = False
+        _persist_job_state(job)
         return JSONResponse(result)
         
     except Exception as e:

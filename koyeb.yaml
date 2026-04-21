@@ -16,11 +16,12 @@ services:
         value: "8000"
       - key: PYTHONUNBUFFERED
         value: "1"
+      - key: CROSSTAB_JOB_TTL_SECONDS
+        value: "86400"
     health_check:
       http:
-        path: /
+        path: /health/deploy-smoke
         port: 8000
     instance_type: nano
     regions:
       - was  # Washington DC
-      - fr   # Frankfurt

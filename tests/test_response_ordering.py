@@ -3,18 +3,29 @@ import shutil
 from pathlib import Path
 
 import pandas as pd
+import app.main as app_main
+
+try:
+    from fastapi.testclient import TestClient
+except Exception:
+    TestClient = None
 
 from app.main import (
     _parse_custom_group_definitions,
     _build_question_mappings_from_codebook,
     _build_question_mappings,
+    _build_job_runtime,
+    _cleanup_stale_job_dirs,
     _filter_logic_warnings,
     apply_filters_to_dataframe,
     detect_concept_groups,
     _normalize_response_value,
     _mr_display_metadata,
+    _persist_job_state,
+    _restore_job_from_disk,
     _transpose_result,
     _resolve_uploaded_workbook_roles,
+    app,
     generate_filter_preview,
     load_mapping,
     detect_mr_groups,
@@ -685,6 +696,44 @@ class ResponseOrderingTests(unittest.TestCase):
             if base.exists():
                 shutil.rmtree(base)
 
+    def test_upload_role_detection_uses_content_when_filenames_are_ambiguous(self) -> None:
+        base = Path("tests") / "_tmp_upload_role_detection_ambiguous"
+        if base.exists():
+            shutil.rmtree(base)
+        base.mkdir(parents=True, exist_ok=True)
+        try:
+            labels_path = base / "workbook_a.xlsx"
+            values_path = base / "workbook_b.xlsx"
+            text_df = pd.DataFrame(
+                {
+                    "Q1": ["1 - Definitely would not buy", "2 - Probably would not buy", "3 - Not sure"],
+                    "Banner": ["Male", "Female", "Female"],
+                }
+            )
+            value_df = pd.DataFrame(
+                {
+                    "Q1": [1, 2, 3],
+                    "Banner": [10, 20, 20],
+                }
+            )
+            text_df.to_excel(labels_path, index=False)
+            value_df.to_excel(values_path, index=False)
+
+            detected_text, detected_value, bundle = _resolve_uploaded_workbook_roles(
+                str(values_path),
+                "numbers_first.xlsx",
+                str(labels_path),
+                "labels_second.xlsx",
+            )
+
+            self.assertEqual(Path(detected_text).name, "workbook_a.xlsx")
+            self.assertEqual(Path(detected_value).name, "workbook_b.xlsx")
+            self.assertEqual(bundle.questions["Q1"].by_code["1"].label, "1 - Definitely would not buy")
+            self.assertEqual(bundle.questions["Banner"].by_code["10"].label, "Male")
+        finally:
+            if base.exists():
+                shutil.rmtree(base)
+
     def test_detect_mr_groups_uses_separator_stems(self) -> None:
         df = pd.DataFrame(
             {
@@ -850,6 +899,80 @@ class ResponseOrderingTests(unittest.TestCase):
         )
         labels = [row["__label__"] for row in result["tables"][0]["rows"]]
         self.assertEqual(labels, ["Advertising Agency", "Grocery stores"])
+
+    def test_mr_similarity_fallback_keeps_full_option_labels(self) -> None:
+        text_df = pd.DataFrame(
+            {
+                "Brand imagery improves mood レノア オードリュクス Eau De Luxe（柔軟剤）": ["Checked", "", "Checked"],
+                "Brand imagery improves mood レノア オードリュクス Eau De Luxe（お洗濯用ビーズ）": ["", "Checked", ""],
+                "Banner": ["Male", "Female", "Male"],
+            }
+        )
+        value_df = pd.DataFrame(
+            {
+                "Brand imagery improves mood レノア オードリュクス Eau De Luxe（柔軟剤）": [1, 0, 1],
+                "Brand imagery improves mood レノア オードリュクス Eau De Luxe（お洗濯用ビーズ）": [0, 1, 0],
+                "Banner": [1, 2, 1],
+            }
+        )
+        bundle = _build_question_mappings(text_df, value_df)
+        mr_detection = detect_mr_groups(value_df)
+        result = tabulate_mr(
+            value_df,
+            bundle=bundle,
+            mr_cols=[
+                "Brand imagery improves mood レノア オードリュクス Eau De Luxe（柔軟剤）",
+                "Brand imagery improves mood レノア オードリュクス Eau De Luxe（お洗濯用ビーズ）",
+            ],
+            col_var="Banner",
+            col_var2=None,
+            include_totals=False,
+            include_base=False,
+            out_counts=True,
+            out_rowpct=False,
+            out_colpct=False,
+            mr_detection=mr_detection,
+        )
+        labels = [row["__label__"] for row in result["tables"][0]["rows"]]
+        self.assertIn("Brand imagery improves mood レノア オードリュクス Eau De Luxe（柔軟剤）", labels)
+        self.assertIn("Brand imagery improves mood レノア オードリュクス Eau De Luxe（お洗濯用ビーズ）", labels)
+
+    def test_mr_similarity_fallback_strips_shared_question_prefix_at_sentence_boundary(self) -> None:
+        prefix = "18 : F4. Recently used softeners in the last 6 months. "
+        text_df = pd.DataFrame(
+            {
+                f"{prefix}Lenor Eau De Luxe (Softener)": ["Checked", "", "Checked"],
+                f"{prefix}Lenor Eau De Luxe (Beads)": ["", "Checked", ""],
+                "Banner": ["Male", "Female", "Male"],
+            }
+        )
+        value_df = pd.DataFrame(
+            {
+                f"{prefix}Lenor Eau De Luxe (Softener)": [1, 0, 1],
+                f"{prefix}Lenor Eau De Luxe (Beads)": [0, 1, 0],
+                "Banner": [1, 2, 1],
+            }
+        )
+        bundle = _build_question_mappings(text_df, value_df)
+        mr_detection = detect_mr_groups(value_df)
+        result = tabulate_mr(
+            value_df,
+            bundle=bundle,
+            mr_cols=[
+                f"{prefix}Lenor Eau De Luxe (Softener)",
+                f"{prefix}Lenor Eau De Luxe (Beads)",
+            ],
+            col_var="Banner",
+            col_var2=None,
+            include_totals=False,
+            include_base=False,
+            out_counts=True,
+            out_rowpct=False,
+            out_colpct=False,
+            mr_detection=mr_detection,
+        )
+        labels = [row["__label__"] for row in result["tables"][0]["rows"]]
+        self.assertEqual(labels, ["Lenor Eau De Luxe (Softener)", "Lenor Eau De Luxe (Beads)"])
 
     def test_tabulate_mr_uses_weighted_counts_and_bases(self) -> None:
         text_df = pd.DataFrame(
@@ -1190,7 +1313,7 @@ class ResponseOrderingTests(unittest.TestCase):
             if base.exists():
                 shutil.rmtree(base)
 
-    def test_tabulate_sr_uses_codebook_order_not_numeric_sort(self) -> None:
+    def test_tabulate_sr_columns_always_sort_ascending_even_with_codebook_order(self) -> None:
         codebook_df = pd.DataFrame(
             {
                 "question": ["Q1", "Q1", "Q1", "Banner", "Banner"],
@@ -1216,7 +1339,7 @@ class ResponseOrderingTests(unittest.TestCase):
         labels = [row["__label__"] for row in result["tables"][0]["rows"]]
         columns = result["tables"][0]["columns"]
         self.assertEqual(labels, ["Disagree", "Agree", "Neutral"])
-        self.assertEqual(columns, ["Female", "Male"])
+        self.assertEqual(columns, ["Male", "Female"])
 
     def test_tabulate_mr_uses_codebook_option_order(self) -> None:
         df = pd.DataFrame(
@@ -1263,6 +1386,97 @@ class ResponseOrderingTests(unittest.TestCase):
         labels = [row["__label__"] for row in result["tables"][0]["rows"]]
         self.assertEqual(labels, ["Base", "Grocery stores", "Advertising Agency", "Market Research"])
         self.assertEqual(result["tables"][0]["rows"][3]["Female"], 0)
+
+
+class DeploymentSafetyTests(unittest.TestCase):
+    def test_cleanup_stale_job_dirs_removes_expired_directories(self) -> None:
+        base = Path("tests") / "_tmp_cleanup_jobs"
+        if base.exists():
+            shutil.rmtree(base)
+        base.mkdir(parents=True, exist_ok=True)
+        try:
+            old_dir = base / "old-job"
+            new_dir = base / "new-job"
+            old_dir.mkdir(parents=True, exist_ok=True)
+            new_dir.mkdir(parents=True, exist_ok=True)
+            (old_dir / "marker.txt").write_text("stale", encoding="utf-8")
+            (new_dir / "marker.txt").write_text("fresh", encoding="utf-8")
+            os_time = 100
+            import os
+            os.utime(old_dir, (os_time, os_time))
+            os.utime(new_dir, (990, 990))
+
+            removed = _cleanup_stale_job_dirs(upload_dir=str(base), max_age_seconds=60, now=1000)
+
+            self.assertIn("old-job", removed)
+            self.assertFalse(old_dir.exists())
+            self.assertTrue(new_dir.exists())
+        finally:
+            if base.exists():
+                shutil.rmtree(base)
+
+    def test_job_state_restores_from_disk(self) -> None:
+        original_upload_dir = app_main.UPLOAD_DIR
+        original_jobs = dict(app_main.JOBS)
+        base = Path("tests") / "_tmp_job_restore"
+        if base.exists():
+            shutil.rmtree(base)
+        base.mkdir(parents=True, exist_ok=True)
+        try:
+            app_main.UPLOAD_DIR = str(base)
+            app_main.JOBS.clear()
+
+            text_path = base / "text.xlsx"
+            value_path = base / "value.xlsx"
+            text_df = pd.DataFrame({"Q1": ["Agree", "Neutral"], "Banner": ["Male", "Female"]})
+            value_df = pd.DataFrame({"Q1": [1, 2], "Banner": [10, 20]})
+            text_df.to_excel(text_path, index=False)
+            value_df.to_excel(value_path, index=False)
+
+            job = _build_job_runtime(str(text_path), str(value_path), "job-1", "text.xlsx")
+            job["last_result"] = {
+                "mode": "sr",
+                "row_label": "Q1",
+                "col_label": "Banner",
+                "tables": [{"kind": "counts", "columns": ["Male", "Female"], "rows": []}],
+            }
+            job["last_pct_suffix"] = True
+            job["saved_outputs"] = [
+                {
+                    "title": "1. Q1 x Banner",
+                    "result": job["last_result"],
+                    "pct_suffix": True,
+                }
+            ]
+
+            _persist_job_state(job)
+            app_main.JOBS.clear()
+
+            restored = _restore_job_from_disk("job-1")
+
+            self.assertIsNotNone(restored)
+            assert restored is not None
+            self.assertEqual(restored["id"], "job-1")
+            self.assertEqual(restored["name"], "text.xlsx")
+            self.assertEqual(restored["saved_outputs"][0]["title"], "1. Q1 x Banner")
+            self.assertTrue(restored["last_pct_suffix"])
+            self.assertEqual(restored["columns"], ["Q1", "Banner"])
+        finally:
+            app_main.UPLOAD_DIR = original_upload_dir
+            app_main.JOBS.clear()
+            app_main.JOBS.update(original_jobs)
+            if base.exists():
+                shutil.rmtree(base)
+
+    @unittest.skipIf(TestClient is None, "fastapi test client is unavailable")
+    def test_deploy_smoke_endpoint_reports_ok(self) -> None:
+        client = TestClient(app)
+        response = client.get("/health/deploy-smoke")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["state_backend"], "disk-backed-single-region")
 
 
 if __name__ == "__main__":

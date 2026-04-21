@@ -334,8 +334,7 @@
       <div data-filter-advanced-mode hidden>
         <div class="filter-groups" data-filter-advanced-groups></div>
         <div class="filter-modal-actions" style="justify-content:flex-start;">
-          <button type="button" class="btn btn-small" data-add-advanced-group="AND">+ Add AND Group</button>
-          <button type="button" class="btn btn-small" data-add-advanced-group="OR">+ Add OR Group</button>
+          <button type="button" class="btn btn-small" data-add-advanced-group>+ Add Group</button>
         </div>
       </div>
 
@@ -1443,11 +1442,9 @@
     closeFilterModal();
     requestPreviewRefresh();
   });
-  filterModalBackdrop?.querySelectorAll("[data-add-advanced-group]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      await addAdvancedFilterGroup({ operator: button.value || "AND", conditions: [] });
-      collectFilterDataFromUI();
-    });
+  filterModalBackdrop?.querySelector("[data-add-advanced-group]")?.addEventListener("click", async () => {
+    await addAdvancedFilterGroup({ operator: "AND", conditions: [] });
+    collectFilterDataFromUI();
   });
   filterModeRadios.forEach((radio) => {
     radio.addEventListener("change", async () => {
