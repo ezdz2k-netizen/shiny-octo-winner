@@ -30,7 +30,7 @@ except Exception:
     pd = None  # type: ignore
 
 APP_TITLE = "Simple Crosstab Application"
-APP_VERSION = "v6.0"
+APP_VERSION = "v8.0"
 JOB_STATE_FILENAME = "job_state.json"
 DEFAULT_JOB_TTL_SECONDS = 60 * 60 * 24
 
